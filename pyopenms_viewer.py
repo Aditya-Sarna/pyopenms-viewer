@@ -21,6 +21,7 @@ import io
 import sys
 import base64
 import math
+import tempfile
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -2956,6 +2957,94 @@ def create_ui():
         # File loading section (local filesystem paths)
         with ui.card().classes('w-full max-w-6xl mb-4'):
             ui.label('Load Data').classes('text-xl font-semibold mb-2')
+
+            # Drag & Drop upload zone
+            ui.label('Drag & drop files here, or use the inputs below').classes('text-sm text-gray-500 mb-2')
+
+            async def handle_upload(e):
+                """Handle uploaded file - detect type and load appropriately."""
+                file = e.files[0] if hasattr(e, 'files') else e
+                filename = file.name.lower()
+                content = file.read()
+
+                # Save to temp file
+                suffix = Path(filename).suffix
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(content)
+                    tmp_path = tmp.name
+
+                try:
+                    if filename.endswith('.mzml'):
+                        viewer.set_loading(True, f"Loading {file.name}...")
+                        success = await run.io_bound(viewer.load_mzml_sync, tmp_path)
+                        if success:
+                            viewer.update_plot()
+                            viewer.update_tic_plot()
+                            info_text = f"Loaded: {file.name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
+                            if viewer.has_faims:
+                                info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
+                            if viewer.info_label:
+                                viewer.info_label.set_text(info_text)
+                            if viewer.spectrum_table is not None:
+                                viewer.spectrum_table.rows = viewer.spectrum_data
+                            if viewer.has_faims:
+                                if viewer.faims_info_label:
+                                    cv_str = ", ".join([f"{cv:.1f}V" for cv in viewer.faims_cvs])
+                                    viewer.faims_info_label.set_text(f"FAIMS CVs: {cv_str}")
+                                    viewer.faims_info_label.set_visibility(True)
+                                if viewer.faims_toggle:
+                                    viewer.faims_toggle.set_visibility(True)
+                            ui.notify(f"Loaded {len(viewer.df):,} peaks from {file.name}", type="positive")
+                        viewer.set_loading(False)
+
+                    elif filename.endswith('.featurexml') or (filename.endswith('.xml') and 'feature' in filename):
+                        viewer.set_loading(True, f"Loading features...")
+                        success = await run.io_bound(viewer.load_featuremap_sync, tmp_path)
+                        if success:
+                            viewer.update_plot()
+                            if viewer.feature_info_label:
+                                viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
+                            if viewer.feature_table is not None:
+                                viewer.feature_table.rows = viewer.feature_data
+                            ui.notify(f"Loaded {viewer.feature_map.size():,} features from {file.name}", type="positive")
+                        viewer.set_loading(False)
+
+                    elif filename.endswith('.idxml') or (filename.endswith('.xml') and 'id' in filename):
+                        viewer.set_loading(True, f"Loading identifications...")
+                        success = await run.io_bound(viewer.load_idxml_sync, tmp_path)
+                        if success:
+                            viewer.update_plot()
+                            if viewer.id_info_label:
+                                viewer.id_info_label.set_text(f"IDs: {len(viewer.peptide_ids):,}")
+                            if viewer.id_table is not None:
+                                viewer.id_table.rows = viewer.id_data
+                            ui.notify(f"Loaded {len(viewer.peptide_ids):,} IDs from {file.name}", type="positive")
+                        viewer.set_loading(False)
+
+                    else:
+                        ui.notify(f"Unknown file type: {file.name}. Supported: .mzML, .featureXML, .idXML", type="warning")
+
+                except Exception as ex:
+                    ui.notify(f"Error loading {file.name}: {ex}", type="negative")
+                    viewer.set_loading(False)
+
+                finally:
+                    # Clean up temp file
+                    try:
+                        Path(tmp_path).unlink()
+                    except Exception:
+                        pass
+
+            with ui.row().classes('w-full mb-4'):
+                ui.upload(
+                    label='Drop mzML, featureXML, or idXML files here',
+                    on_upload=handle_upload,
+                    auto_upload=True,
+                    multiple=True,
+                ).classes('w-full').props('accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat bordered')
+
+            ui.separator().classes('mb-2')
+            ui.label('Or specify file paths:').classes('text-sm text-gray-500 mb-2')
 
             with ui.row().classes('w-full items-end gap-4 flex-wrap'):
                 # mzML
