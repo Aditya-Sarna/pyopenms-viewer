@@ -48,17 +48,20 @@ from pyopenms import (
 
 # NiceGUI for the web interface
 from nicegui import ui, app, run
+from nicegui.events import GenericEventArguments
 
 
-# Global viewer instance for CLI file loading
-_viewer_instance = None
+# CLI files to load on startup
 _cli_files = {'mzml': None, 'featurexml': None, 'idxml': None}
 
 
 async def file_picker_dialog(title: str = "Select File",
                              start_path: str = None,
                              extensions: List[str] = None) -> Optional[str]:
-    """Show a file picker dialog and return the selected file path."""
+    """Show a server-side file picker dialog and return the selected file path.
+
+    NiceGUI 3.x: Uses scroll_area for better scrolling behavior.
+    """
     import os
 
     if start_path is None:
@@ -67,31 +70,34 @@ async def file_picker_dialog(title: str = "Select File",
     current_path = start_path
     selected_file = None
 
-    with ui.dialog() as dialog, ui.card().classes('w-96'):
+    # NiceGUI 3.x: Use persistent prop to prevent accidental closing
+    with ui.dialog().props('persistent') as dialog, ui.card().classes('w-96'):
         ui.label(title).classes('text-lg font-bold mb-2')
 
         # Current path display
         path_label = ui.label(current_path).classes('text-xs text-gray-400 mb-2 break-all')
 
-        # File list container
-        file_list = ui.column().classes('w-full max-h-80 overflow-auto border rounded p-2')
+        # NiceGUI 3.x: Use scroll_area for better scrolling behavior
+        # Tailwind 4: Use explicit border color for compatibility
+        with ui.scroll_area().classes('w-full h-80 border border-gray-600 rounded') as file_list:
+            file_container = ui.column().classes('w-full p-2')
 
         # Selected file display
         selected_label = ui.label('No file selected').classes('text-sm text-cyan-400 mt-2')
 
         def refresh_file_list():
             nonlocal current_path
-            file_list.clear()
-            path_label.set_text(current_path)
+            file_container.clear()
+            path_label.text = current_path  # NiceGUI 3.x: direct property access
 
             try:
                 entries = sorted(os.listdir(current_path))
             except PermissionError:
-                with file_list:
+                with file_container:
                     ui.label('Permission denied').classes('text-red-400')
                 return
 
-            with file_list:
+            with file_container:
                 # Parent directory
                 if current_path != '/':
                     def go_up():
@@ -131,7 +137,7 @@ async def file_picker_dialog(title: str = "Select File",
                         def select_file(p=full_path, name=entry):
                             nonlocal selected_file
                             selected_file = p
-                            selected_label.set_text(f'Selected: {name}')
+                            selected_label.text = f'Selected: {name}'  # NiceGUI 3.x: direct property
 
                         ui.button(f'📄 {entry}', on_click=select_file).props('flat dense align=left').classes('w-full justify-start text-gray-300 hover:text-white')
 
@@ -560,6 +566,48 @@ class MzMLViewer:
         self.rt_threshold_3d = 120.0  # Max RT range for 3D (seconds)
         self.mz_threshold_3d = 50.0  # Max m/z range for 3D
 
+        # NiceGUI 3.x: Event callbacks for state management
+        # These allow UI components to subscribe to state changes
+        self._on_data_loaded_callbacks: List[callable] = []
+        self._on_view_changed_callbacks: List[callable] = []
+        self._on_selection_changed_callbacks: List[callable] = []
+
+    def on_data_loaded(self, callback: callable) -> None:
+        """Register a callback for when data is loaded (mzML, features, or IDs)."""
+        self._on_data_loaded_callbacks.append(callback)
+
+    def on_view_changed(self, callback: callable) -> None:
+        """Register a callback for when the view (zoom/pan) changes."""
+        self._on_view_changed_callbacks.append(callback)
+
+    def on_selection_changed(self, callback: callable) -> None:
+        """Register a callback for when selection (spectrum, feature, ID) changes."""
+        self._on_selection_changed_callbacks.append(callback)
+
+    def _emit_data_loaded(self, data_type: str) -> None:
+        """Emit data loaded event to all registered callbacks."""
+        for callback in self._on_data_loaded_callbacks:
+            try:
+                callback(data_type, self)
+            except Exception:
+                pass
+
+    def _emit_view_changed(self) -> None:
+        """Emit view changed event to all registered callbacks."""
+        for callback in self._on_view_changed_callbacks:
+            try:
+                callback(self)
+            except Exception:
+                pass
+
+    def _emit_selection_changed(self, selection_type: str, index: Optional[int]) -> None:
+        """Emit selection changed event to all registered callbacks."""
+        for callback in self._on_selection_changed_callbacks:
+            try:
+                callback(selection_type, index, self)
+            except Exception:
+                pass
+
     def _get_cv_from_spectrum(self, spec) -> Optional[float]:
         """Extract FAIMS compensation voltage from spectrum metadata."""
         # Try common CV metadata names
@@ -882,13 +930,15 @@ class MzMLViewer:
 
             # Update spectrum browser table
             if self.spectrum_table is not None:
-                self.spectrum_table.update_rows(self.spectrum_data)
+                self.spectrum_table.rows = self.spectrum_data
 
             ui.notify(f"Loaded {len(self.df):,} peaks", type="positive")
             if self.has_faims:
                 ui.notify(f"FAIMS data detected: {len(self.faims_cvs)} compensation voltages", type="info")
 
             self.set_loading(False)
+            # NiceGUI 3.x: Emit event for state management
+            self._emit_data_loaded('mzml')
             return True
 
         except Exception as e:
@@ -1121,6 +1171,9 @@ class MzMLViewer:
         if self.show_spectrum_marker and self.df is not None:
             self.update_plot()
 
+        # NiceGUI 3.x: Emit selection change event
+        self._emit_selection_changed('spectrum', spectrum_idx)
+
     def navigate_spectrum(self, direction: int):
         """Navigate to prev/next spectrum."""
         if self.exp is None or self.exp.size() == 0:
@@ -1193,9 +1246,11 @@ class MzMLViewer:
             ui.notify(f"Loaded {n_features:,} features", type="positive")
 
             if self.feature_table is not None:
-                self.feature_table.update_rows(self.feature_data)
+                self.feature_table.rows = self.feature_data
 
             self.set_loading(False)
+            # NiceGUI 3.x: Emit event for state management
+            self._emit_data_loaded('features')
             return True
 
         except Exception as e:
@@ -1214,7 +1269,7 @@ class MzMLViewer:
         if self.feature_info_label:
             self.feature_info_label.set_text("Features: None")
         if self.feature_table is not None:
-            self.feature_table.update_rows([])
+            self.feature_table.rows = []
         ui.notify("Features cleared", type="info")
 
     def _extract_id_data(self) -> List[Dict[str, Any]]:
@@ -1290,9 +1345,11 @@ class MzMLViewer:
             ui.notify(f"Loaded {n_ids:,} peptide IDs", type="positive")
 
             if self.id_table is not None:
-                self.id_table.update_rows(self.id_data)
+                self.id_table.rows = self.id_data
 
             self.set_loading(False)
+            # NiceGUI 3.x: Emit event for state management
+            self._emit_data_loaded('ids')
             return True
 
         except Exception as e:
@@ -1312,7 +1369,7 @@ class MzMLViewer:
         if self.id_info_label:
             self.id_info_label.set_text("IDs: None")
         if self.id_table is not None:
-            self.id_table.update_rows([])
+            self.id_table.rows = []
         ui.notify("Identifications cleared", type="info")
 
     def find_ms2_spectrum(self, rt: float, precursor_mz: float, rt_tolerance: float = 5.0, mz_tolerance: float = 0.5) -> Optional[MSSpectrum]:
@@ -1577,6 +1634,9 @@ class MzMLViewer:
         self.update_plot()
         ui.notify(f"Zoomed to feature {feature_idx + 1}", type="info")
 
+        # NiceGUI 3.x: Emit selection change event
+        self._emit_selection_changed('feature', feature_idx)
+
     def zoom_to_id(self, id_idx: int, padding: float = 0.3):
         """Zoom to a specific peptide identification and show annotated spectrum."""
         if not self.peptide_ids or id_idx >= len(self.peptide_ids):
@@ -1607,6 +1667,9 @@ class MzMLViewer:
             ui.notify(f"No matching MS2 spectrum found for this ID", type="warning")
 
         ui.notify(f"Zoomed to ID {id_idx + 1}", type="info")
+
+        # NiceGUI 3.x: Emit selection change event
+        self._emit_selection_changed('id', id_idx)
 
     def _data_to_plot_pixel(self, rt: float, mz: float) -> Tuple[int, int]:
         """Convert RT/m/z to pixel coordinates."""
@@ -2164,6 +2227,9 @@ class MzMLViewer:
         # Update 3D view if enabled
         if self.show_3d_view:
             self.update_3d_view()
+
+        # NiceGUI 3.x: Emit view change event
+        self._emit_view_changed()
 
     def render_minimap(self) -> Optional[str]:
         """Render the minimap showing full data extent with view rectangle overlay."""
@@ -2878,11 +2944,8 @@ class MzMLViewer:
 
 
 def create_ui():
-    """Create NiceGUI interface."""
-    global _viewer_instance
-
+    """Create NiceGUI interface - root page function for NiceGUI 3.x."""
     viewer = MzMLViewer()
-    _viewer_instance = viewer
 
     ui.dark_mode().enable()
 
@@ -2942,7 +3005,7 @@ def create_ui():
 
                                     # Update spectrum table
                                     if viewer.spectrum_table is not None:
-                                        viewer.spectrum_table.update_rows(viewer.spectrum_data)
+                                        viewer.spectrum_table.rows = viewer.spectrum_data
 
                                     # Update FAIMS UI
                                     if viewer.has_faims:
@@ -2995,7 +3058,7 @@ def create_ui():
                                     if viewer.feature_info_label:
                                         viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
                                     if viewer.feature_table is not None:
-                                        viewer.feature_table.update_rows(viewer.feature_data)
+                                        viewer.feature_table.rows = viewer.feature_data
                                     ui.notify(f"Loaded {viewer.feature_map.size():,} features", type="positive")
                             except Exception as ex:
                                 ui.notify(f"Error loading features: {ex}", type="negative")
@@ -3042,7 +3105,7 @@ def create_ui():
                                     if viewer.id_info_label:
                                         viewer.id_info_label.set_text(f"IDs: {len(viewer.peptide_ids):,}")
                                     if viewer.id_table is not None:
-                                        viewer.id_table.update_rows(viewer.id_data)
+                                        viewer.id_table.rows = viewer.id_data
                                     ui.notify(f"Loaded {len(viewer.peptide_ids):,} peptide IDs", type="positive")
                             except Exception as ex:
                                 ui.notify(f"Error loading IDs: {ex}", type="negative")
@@ -3545,7 +3608,7 @@ def create_ui():
                         rt_max=spec_rt_max.value if spec_rt_max.value else None,
                         min_peaks=int(spec_min_peaks.value) if spec_min_peaks.value else None
                     )
-                    viewer.spectrum_table.update_rows(filtered)
+                    viewer.spectrum_table.rows = filtered
                     ui.notify(f"Showing {len(filtered)} spectra", type="info")
 
                 def reset_spectrum_filter():
@@ -3553,7 +3616,7 @@ def create_ui():
                     spec_rt_min.value = None
                     spec_rt_max.value = None
                     spec_min_peaks.value = None
-                    viewer.spectrum_table.update_rows(viewer.spectrum_data)
+                    viewer.spectrum_table.rows = viewer.spectrum_data
 
                 ui.button('Apply', on_click=apply_spectrum_filter).props('dense size=sm color=primary')
                 ui.button('Reset', on_click=reset_spectrum_filter).props('dense size=sm color=grey')
@@ -3606,14 +3669,14 @@ def create_ui():
                         min_quality=feat_min_quality.value if feat_min_quality.value else None,
                         charge=charge_val
                     )
-                    viewer.feature_table.update_rows(filtered)
+                    viewer.feature_table.rows = filtered
                     ui.notify(f"Showing {len(filtered)} features", type="info")
 
                 def reset_feature_filter():
                     feat_min_intensity.value = None
                     feat_min_quality.value = None
                     feat_charge.value = 'All'
-                    viewer.feature_table.update_rows(viewer.feature_data)
+                    viewer.feature_table.rows = viewer.feature_data
 
                 ui.button('Apply', on_click=apply_feature_filter).props('dense size=sm color=primary')
                 ui.button('Reset', on_click=reset_feature_filter).props('dense size=sm color=grey')
@@ -3676,14 +3739,14 @@ def create_ui():
                         min_score=id_min_score.value if id_min_score.value else None,
                         charge=charge_val
                     )
-                    viewer.id_table.update_rows(filtered)
+                    viewer.id_table.rows = filtered
                     ui.notify(f"Showing {len(filtered)} identifications", type="info")
 
                 def reset_id_filter():
                     id_seq_pattern.value = ''
                     id_min_score.value = None
                     id_charge.value = 'All'
-                    viewer.id_table.update_rows(viewer.id_data)
+                    viewer.id_table.rows = viewer.id_data
 
                 ui.button('Apply', on_click=apply_id_filter).props('dense size=sm color=primary')
                 ui.button('Reset', on_click=reset_id_filter).props('dense size=sm color=grey')
@@ -3888,10 +3951,7 @@ def main(files, port, host, open, native):
         if open:
             click.echo("Opening browser...")
 
-    @ui.page('/')
-    def index():
-        create_ui()
-
+    # NiceGUI 3.x: Use root parameter for cleaner single-page app structure
     ui.run(
         title='mzML Peak Map Viewer',
         host=host,
@@ -3900,6 +3960,7 @@ def main(files, port, host, open, native):
         show=open and not native,
         native=native,
         window_size=(1400, 900) if native else None,
+        root=create_ui,
     )
 
 
