@@ -401,6 +401,7 @@ class MzMLViewer:
         self.show_ids = True
         self.show_spectrum_marker = True  # Always show RT/m/z marker for selected spectrum
         self.colormap = 'jet'  # Default colormap
+        self.rt_in_minutes = False  # Display RT in minutes instead of seconds
 
         # Colors
         self.centroid_color = (0, 255, 100, 255)
@@ -1391,23 +1392,28 @@ class MzMLViewer:
             )
             return fig
 
+        # Convert RT to display units
+        rt_divisor = 60.0 if self.rt_in_minutes else 1.0
+        rt_unit = "min" if self.rt_in_minutes else "s"
+        display_rt = [rt / rt_divisor for rt in self.tic_rt]
+
         # Create TIC trace
         fig.add_trace(go.Scatter(
-            x=self.tic_rt,
+            x=display_rt,
             y=self.tic_intensity,
             mode='lines',
             name='TIC',
             line=dict(color='#00d4ff', width=1),
             fill='tozeroy',
             fillcolor='rgba(0, 212, 255, 0.2)',
-            hovertemplate='RT: %{x:.2f}s<br>Intensity: %{y:.2e}<extra></extra>'
+            hovertemplate=f'RT: %{{x:.2f}}{rt_unit}<br>Intensity: %{{y:.2e}}<extra></extra>'
         ))
 
         # Add view range indicator
         if self.view_rt_min is not None and self.view_rt_max is not None:
             fig.add_vrect(
-                x0=self.view_rt_min,
-                x1=self.view_rt_max,
+                x0=self.view_rt_min / rt_divisor,
+                x1=self.view_rt_max / rt_divisor,
                 fillcolor="rgba(255, 255, 0, 0.15)",
                 layer="below",
                 line_width=1,
@@ -1417,7 +1423,7 @@ class MzMLViewer:
         # Add vertical marker for selected spectrum
         if self.selected_spectrum_idx is not None and self.exp is not None:
             spec = self.exp[self.selected_spectrum_idx]
-            selected_rt = spec.getRT()
+            selected_rt = spec.getRT() / rt_divisor
             ms_level = spec.getMSLevel()
             marker_color = '#00d4ff' if ms_level == 1 else '#ff6b6b'
             fig.add_vline(
@@ -1433,7 +1439,7 @@ class MzMLViewer:
 
         fig.update_layout(
             title=dict(text="Total Ion Chromatogram (TIC) - Click to select spectrum", font=dict(size=14)),
-            xaxis_title="RT (s)",
+            xaxis_title=f"RT ({rt_unit})",
             yaxis_title="Total Intensity",
             template="plotly_dark",
             height=200,
@@ -1444,7 +1450,7 @@ class MzMLViewer:
 
         # Set x-axis range to match data
         if len(self.tic_rt) > 0:
-            fig.update_xaxes(range=[self.rt_min, self.rt_max])
+            fig.update_xaxes(range=[self.rt_min / rt_divisor, self.rt_max / rt_divisor])
 
         return fig
 
@@ -1940,7 +1946,14 @@ class MzMLViewer:
                        outline=self.axis_color, width=1)
 
         # X-axis
-        rt_ticks = calculate_nice_ticks(self.view_rt_min, self.view_rt_max, num_ticks=8)
+        # Calculate ticks in display units (minutes or seconds)
+        if self.rt_in_minutes:
+            display_rt_min = self.view_rt_min / 60.0
+            display_rt_max = self.view_rt_max / 60.0
+            rt_ticks_display = calculate_nice_ticks(display_rt_min, display_rt_max, num_ticks=8)
+            rt_ticks = [t * 60.0 for t in rt_ticks_display]  # Convert back to seconds for positioning
+        else:
+            rt_ticks = calculate_nice_ticks(self.view_rt_min, self.view_rt_max, num_ticks=8)
         rt_range = self.view_rt_max - self.view_rt_min
 
         for tick_val in rt_ticks:
@@ -1950,12 +1963,15 @@ class MzMLViewer:
 
                 draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=self.tick_color, width=1)
 
-                label = format_tick_label(tick_val, rt_range)
+                # Format label in display units
+                display_val = tick_val / 60.0 if self.rt_in_minutes else tick_val
+                display_range = rt_range / 60.0 if self.rt_in_minutes else rt_range
+                label = format_tick_label(display_val, display_range)
                 bbox = draw.textbbox((0, 0), label, font=font)
                 label_width = bbox[2] - bbox[0]
                 draw.text((x - label_width // 2, plot_bottom + 8), label, fill=self.label_color, font=font)
 
-        x_title = "RT (s)"
+        x_title = "RT (min)" if self.rt_in_minutes else "RT (s)"
         bbox = draw.textbbox((0, 0), x_title, font=title_font)
         title_width = bbox[2] - bbox[0]
         draw.text((plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
@@ -2166,11 +2182,11 @@ class MzMLViewer:
                         x_range=(self.rt_min, self.rt_max),
                         y_range=(self.mz_min, self.mz_max))
 
-        # Aggregate using log of count for better visualization
-        agg = cvs.points(self.df, 'rt', 'mz', agg=ds.sum('intensity'))
+        # Aggregate using max intensity (same approach as main view for consistent colors)
+        agg = cvs.points(self.df, 'rt', 'mz', agg=ds.max('log_intensity'))
 
-        # Apply color map
-        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='log')
+        # Apply color map with linear scaling (matches main view)
+        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
         img = tf.dynspread(img, threshold=0.5, max_px=2)
         img = tf.set_background(img, get_colormap_background(self.colormap))
 
@@ -2336,7 +2352,10 @@ class MzMLViewer:
             return
 
         rt, mz = self.pixel_to_data_coords(pixel_x, pixel_y)
-        self.coord_label.set_text(f"RT: {rt:.2f}s  m/z: {mz:.4f}")
+        if self.rt_in_minutes:
+            self.coord_label.set_text(f"RT: {rt / 60.0:.2f}min  m/z: {mz:.4f}")
+        else:
+            self.coord_label.set_text(f"RT: {rt:.2f}s  m/z: {mz:.4f}")
 
     # ==================== 3D Visualization Methods ====================
 
@@ -2902,6 +2921,9 @@ def create_ui():
                         if success:
                             viewer.update_plot()
                             viewer.update_tic_plot()
+                            # Show first spectrum in 1D browser
+                            if viewer.exp and viewer.exp.size() > 0:
+                                viewer.show_spectrum_in_browser(0)
                             info_text = f"Loaded: {original_name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
                             if viewer.has_faims:
                                 info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
@@ -3161,6 +3183,18 @@ def create_ui():
 
                 colormap_options = list(COLORMAPS.keys())
                 ui.select(colormap_options, value='jet', on_change=change_colormap).props('dense outlined').classes('w-28')
+
+                ui.label('|').classes('text-gray-600 mx-2')
+                ui.label('RT:').classes('text-xs text-gray-400')
+
+                def toggle_rt_unit(e):
+                    viewer.rt_in_minutes = (e.value == 'min')
+                    if viewer.df is not None:
+                        viewer.update_plot()
+                        viewer.update_minimap()
+                        viewer.update_tic_plot()
+
+                ui.toggle(['sec', 'min'], value='sec', on_change=toggle_rt_unit).props('dense')
 
                 # 3D View button
                 ui.label('|').classes('text-gray-600 mx-2')
@@ -3738,6 +3772,9 @@ def create_ui():
         if viewer.load_mzml(_cli_files['mzml']):
             viewer.update_plot()
             viewer.update_tic_plot()
+            # Show first spectrum in 1D browser
+            if viewer.exp and viewer.exp.size() > 0:
+                viewer.show_spectrum_in_browser(0)
     if _cli_files['featurexml']:
         if viewer.load_featuremap(_cli_files['featurexml']):
             viewer.update_plot()
@@ -3821,6 +3858,7 @@ def main(files, port, host, open, native):
         native=native,
         window_size=(1400, 900) if native else None,
         root=create_ui,
+        reconnect_timeout=60.0,  # Allow longer reconnect time for large file loads
     )
 
 
