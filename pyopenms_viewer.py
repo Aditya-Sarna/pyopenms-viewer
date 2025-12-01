@@ -3081,11 +3081,19 @@ def create_ui():
     """Create NiceGUI interface - root page function for NiceGUI 3.x."""
     viewer = MzMLViewer()
 
-    ui.dark_mode().enable()
+    dark = ui.dark_mode()
+    dark.enable()
 
-    # Fullscreen button in top-right corner
-    with ui.element('div').classes('fixed top-2 right-2 z-50'):
-        fullscreen_btn = ui.button(icon='fullscreen', on_click=lambda: ui.run_javascript('''
+    # Top-right corner buttons (dark mode toggle + fullscreen)
+    with ui.element('div').classes('fixed top-2 right-2 z-50 flex gap-1'):
+        def toggle_dark_mode():
+            dark.toggle()
+            dark_btn.props(f'icon={"light_mode" if dark.value else "dark_mode"}')
+            dark_btn._props['icon'] = 'light_mode' if dark.value else 'dark_mode'
+            dark_btn.update()
+
+        dark_btn = ui.button(icon='light_mode', on_click=toggle_dark_mode).props('flat round dense color=grey').tooltip('Toggle dark/light mode')
+        ui.button(icon='fullscreen', on_click=lambda: ui.run_javascript('''
             if (!document.fullscreenElement) {
                 document.documentElement.requestFullscreen();
             } else {
