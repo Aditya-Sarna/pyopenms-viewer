@@ -17,7 +17,9 @@ Usage:
     pyopenms-viewer sample.mzML features.featureXML ids.idXML  # All three
 """
 
+import asyncio
 import io
+import os
 import sys
 import base64
 import math
@@ -26,6 +28,9 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+
+# Set OpenMP threads for pyOpenMS to use all available cores
+os.environ.setdefault('OMP_NUM_THREADS', str(os.cpu_count()))
 
 import click
 import plotly.graph_objects as go
@@ -460,11 +465,6 @@ class MzMLViewer:
         self.hover_id_idx = None  # ID being hovered in table
         self._hover_update_pending = False  # Debounce hover updates
 
-        # Loading state
-        self.loading_indicator = None
-        self.loading_label = None  # Label for progress text
-        self.loading_progress_bar = None  # Progress bar element
-        self.is_loading = False
 
         # 3D visualization
         self.show_3d_view = False
@@ -553,8 +553,11 @@ class MzMLViewer:
         Returns True if successful and file has spectra.
         """
         try:
+            filename = Path(filepath).name
+            print(f"Reading {filename} with MzMLFile (this may take a while)...")
             self.exp = MSExperiment()
             MzMLFile().load(filepath, self.exp)
+            print(f"Loaded {self.exp.size()} spectra from {filename}")
             return self.exp.size() > 0
         except Exception as e:
             print(f"Error parsing mzML: {e}")
@@ -1954,55 +1957,6 @@ class MzMLViewer:
             self.hover_id_idx = None
             self.update_plot()
 
-    def set_loading(self, loading: bool, message: str = "Loading...", indeterminate: bool = False):
-        """Set loading state and update indicator.
-
-        Args:
-            loading: Whether loading is in progress
-            message: Status message to display
-            indeterminate: If True, show indeterminate progress bar (for blocking operations)
-        """
-        self.is_loading = loading
-        if self.loading_indicator:
-            if loading:
-                self.loading_indicator.style('display: flex;')
-                if self.loading_label:
-                    self.loading_label.set_text(message)
-                if self.loading_progress_bar:
-                    if indeterminate:
-                        self.loading_progress_bar.props('indeterminate')
-                    else:
-                        self.loading_progress_bar.props(remove='indeterminate')
-                        self.loading_progress_bar.value = 0
-            else:
-                self.loading_indicator.style('display: none;')
-                if self.loading_progress_bar:
-                    self.loading_progress_bar.props(remove='indeterminate')
-                    self.loading_progress_bar.value = 1.0
-
-    def update_loading_progress(self, message: str, progress: float = None):
-        """Update the loading progress message and optional progress bar.
-
-        Args:
-            message: Status message to display
-            progress: Optional progress value 0.0-1.0. If None, tries to parse % from message.
-        """
-        if self.loading_label:
-            self.loading_label.set_text(message)
-        if self.status_label:
-            self.status_label.set_text(message)
-
-        # Update progress bar
-        if self.loading_progress_bar:
-            if progress is not None:
-                self.loading_progress_bar.value = progress
-            else:
-                # Try to extract percentage from message like "Extracting peaks... 50%"
-                import re
-                match = re.search(r'(\d+)%', message)
-                if match:
-                    self.loading_progress_bar.value = int(match.group(1)) / 100.0
-
     def _draw_axes(self, canvas: Image.Image) -> Image.Image:
         """Draw axes on canvas."""
         draw = ImageDraw.Draw(canvas)
@@ -2294,8 +2248,11 @@ class MzMLViewer:
                 x1, x2 = max(0, x1), min(self.minimap_width - 1, x2)
                 y1, y2 = max(0, y1), min(self.minimap_height - 1, y2)
 
-                # Draw rectangle outline (yellow)
-                draw.rectangle([x1, y1, x2, y2], outline=(255, 255, 0, 255), width=2)
+                # Draw two concentric rectangles with complementary colors for visibility
+                # Outer rectangle (blue)
+                draw.rectangle([x1-1, y1-1, x2+1, y2+1], outline=(0, 100, 255, 255), width=2)
+                # Inner rectangle (yellow)
+                draw.rectangle([x1+1, y1+1, x2-1, y2-1], outline=(255, 255, 0, 255), width=2)
 
         # Convert to base64
         buffer = io.BytesIO()
@@ -3007,48 +2964,33 @@ def create_ui():
 
                 try:
                     if filename.endswith('.mzml'):
-                        # Phase 1: Parse mzML file (blocking pyOpenMS call)
-                        viewer.set_loading(True, f"Parsing {original_name}...", indeterminate=True)
-                        parse_success = await run.io_bound(viewer.parse_mzml_file, tmp_path)
-
-                        if parse_success:
-                            # Phase 2: Process data with progress updates
-                            viewer.set_loading(True, f"Processing spectra...", indeterminate=False)
-
-                            # Progress callback that updates UI
-                            def update_progress(message, progress):
-                                viewer.update_loading_progress(message, progress)
-
-                            success = await run.io_bound(viewer.process_mzml_data, tmp_path, update_progress)
-
-                            if success:
-                                viewer.update_loading_progress("Rendering...", 0.98)
-                                viewer.update_plot()
-                                viewer.update_tic_plot()
-                                # Show first spectrum in 1D browser
-                                if viewer.exp and viewer.exp.size() > 0:
-                                    viewer.show_spectrum_in_browser(0)
-                                info_text = f"Loaded: {original_name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
-                                if viewer.has_faims:
-                                    info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
-                                if viewer.info_label:
-                                    viewer.info_label.set_text(info_text)
-                                if viewer.spectrum_table is not None:
-                                    viewer.spectrum_table.rows = viewer.spectrum_data
-                                if viewer.has_faims:
-                                    if viewer.faims_info_label:
-                                        cv_str = ", ".join([f"{cv:.1f}V" for cv in viewer.faims_cvs])
-                                        viewer.faims_info_label.set_text(f"FAIMS CVs: {cv_str}")
-                                        viewer.faims_info_label.set_visibility(True)
-                                    if viewer.faims_toggle:
-                                        viewer.faims_toggle.set_visibility(True)
-                                ui.notify(f"Loaded {len(viewer.df):,} peaks from {original_name}", type="positive")
+                        # Load mzML file (blocking pyOpenMS call runs in background thread)
+                        success = await run.io_bound(viewer.load_mzml_sync, tmp_path)
+                        if success:
+                            viewer.update_plot()
+                            viewer.update_tic_plot()
+                            # Show first spectrum in 1D browser
+                            if viewer.exp and viewer.exp.size() > 0:
+                                viewer.show_spectrum_in_browser(0)
+                            info_text = f"Loaded: {original_name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
+                            if viewer.has_faims:
+                                info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
+                            if viewer.info_label:
+                                viewer.info_label.set_text(info_text)
+                            if viewer.spectrum_table is not None:
+                                viewer.spectrum_table.rows = viewer.spectrum_data
+                            if viewer.has_faims:
+                                if viewer.faims_info_label:
+                                    cv_str = ", ".join([f"{cv:.1f}V" for cv in viewer.faims_cvs])
+                                    viewer.faims_info_label.set_text(f"FAIMS CVs: {cv_str}")
+                                    viewer.faims_info_label.set_visibility(True)
+                                if viewer.faims_toggle:
+                                    viewer.faims_toggle.set_visibility(True)
+                            ui.notify(f"Loaded {len(viewer.df):,} peaks from {original_name}", type="positive")
                         else:
-                            ui.notify(f"Failed to parse {original_name}", type="negative")
-                        viewer.set_loading(False)
+                            ui.notify(f"Failed to load {original_name}", type="negative")
 
                     elif filename.endswith('.featurexml') or (filename.endswith('.xml') and 'feature' in filename):
-                        viewer.set_loading(True, f"Loading features...", indeterminate=True)
                         success = await run.io_bound(viewer.load_featuremap_sync, tmp_path)
                         if success:
                             viewer.update_plot()
@@ -3057,10 +2999,8 @@ def create_ui():
                             if viewer.feature_table is not None:
                                 viewer.feature_table.rows = viewer.feature_data
                             ui.notify(f"Loaded {viewer.feature_map.size():,} features from {original_name}", type="positive")
-                        viewer.set_loading(False)
 
                     elif filename.endswith('.idxml') or (filename.endswith('.xml') and 'id' in filename):
-                        viewer.set_loading(True, f"Loading identifications...", indeterminate=True)
                         success = await run.io_bound(viewer.load_idxml_sync, tmp_path)
                         if success:
                             viewer.update_plot()
@@ -3069,7 +3009,6 @@ def create_ui():
                             if viewer.id_table is not None:
                                 viewer.id_table.rows = viewer.id_data
                             ui.notify(f"Loaded {len(viewer.peptide_ids):,} IDs from {original_name}", type="positive")
-                        viewer.set_loading(False)
 
                     else:
                         ui.notify(f"Unknown file type: {original_name}. Supported: .mzML, .featureXML, .idXML", type="warning")
@@ -3270,18 +3209,6 @@ def create_ui():
 
             ui.label('Scroll to zoom, drag to select region, double-click to reset').classes('text-xs text-gray-500 mb-1')
 
-            # Loading indicator overlay with progress bar
-            with ui.element('div').classes('relative'):
-                viewer.loading_indicator = ui.element('div').classes(
-                    'absolute inset-0 flex items-center justify-center bg-black/70 z-50'
-                ).style('display: none;')
-                with viewer.loading_indicator:
-                    with ui.card().classes('p-4 bg-gray-900 w-80'):
-                        with ui.column().classes('items-center gap-3 w-full'):
-                            ui.spinner('dots', size='lg', color='cyan')
-                            viewer.loading_label = ui.label('Loading...').classes('text-cyan-400 text-sm font-mono text-center')
-                            viewer.loading_progress_bar = ui.linear_progress(value=0, show_value=False).classes('w-full').props('color=cyan rounded')
-
             # Peak map with mouse interaction and minimap
             with ui.row().classes('w-full items-start gap-2'):
                 # Peak map image with mouse handlers
@@ -3428,11 +3355,11 @@ def create_ui():
 
                     ui.button('← Back', on_click=go_back).props('dense size=sm color=grey').classes('mt-1').tooltip('Go to previous view')
 
-            # 1D Spectrum Browser Plot (directly below peak map, same width)
-            with ui.column().classes('w-full mt-2 items-center'):
+        # 1D Spectrum Browser (collapsible panel)
+        with ui.expansion('1D Spectrum', icon='show_chart', value=True).classes('w-full max-w-[1700px]'):
+            with ui.column().classes('w-full items-center'):
                 # Navigation and info row
                 with ui.row().classes('w-full items-center gap-2 mb-1').style(f'max-width: {viewer.canvas_width}px;'):
-                    ui.label('1D Spectrum:').classes('text-sm font-semibold text-gray-300')
                     ui.button('|<', on_click=lambda: viewer.show_spectrum_in_browser(0)).props('dense size=sm').tooltip('First')
                     ui.button('< MS1', on_click=lambda: viewer.navigate_spectrum_by_ms_level(-1, 1)).props('dense size=sm color=cyan').tooltip('Prev MS1')
                     ui.button('<', on_click=lambda: viewer.navigate_spectrum(-1)).props('dense size=sm').tooltip('Prev')
@@ -3521,16 +3448,6 @@ def create_ui():
                     margin=dict(l=0, r=0, t=0, b=0)
                 )
                 viewer.plot_3d = ui.plotly(empty_fig).classes('w-full').style('margin-top: -10px;')
-
-        # Navigation controls
-        with ui.row().classes('justify-center gap-2 mt-2'):
-            ui.button('Reset View', on_click=viewer.reset_view).props('color=secondary')
-            ui.button('Zoom In', on_click=lambda: viewer.zoom_in(0.5)).props('color=primary')
-            ui.button('Zoom Out', on_click=lambda: viewer.zoom_out(2.0)).props('color=primary')
-            ui.button('← Pan Left', on_click=lambda: viewer.pan(rt_frac=-0.25)).props('color=accent')
-            ui.button('→ Pan Right', on_click=lambda: viewer.pan(rt_frac=0.25)).props('color=accent')
-            ui.button('↑ Pan Up', on_click=lambda: viewer.pan(mz_frac=0.25)).props('color=accent')
-            ui.button('↓ Pan Down', on_click=lambda: viewer.pan(mz_frac=-0.25)).props('color=accent')
 
         # Spectrum Table (moved up for better visibility)
         with ui.expansion('Spectrum Table', icon='list', value=True).classes('w-full max-w-6xl mt-2'):
