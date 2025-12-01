@@ -402,9 +402,10 @@ class MzMLViewer:
         # Display options
         self.show_centroids = True
         self.show_bounding_boxes = False  # Disabled by default for faster rendering
+        self.swap_axes = True  # Default: m/z on x-axis, RT on y-axis; when False: RT on x, m/z on y
+        self.show_spectrum_marker = True  # Show spectrum marker (crosshair) on 2D peakmap
         self.show_convex_hulls = False    # Disabled by default for faster rendering
         self.show_ids = True
-        self.show_spectrum_marker = True  # Always show RT/m/z marker for selected spectrum
         self.colormap = 'jet'  # Default colormap
         self.rt_in_minutes = False  # Display RT in minutes instead of seconds
         self.spectrum_intensity_percent = True  # Display spectrum intensity as percentage (vs absolute)
@@ -1663,15 +1664,21 @@ class MzMLViewer:
         self._emit_selection_changed('id', id_idx)
 
     def _data_to_plot_pixel(self, rt: float, mz: float) -> Tuple[int, int]:
-        """Convert RT/m/z to pixel coordinates."""
+        """Convert RT/m/z to pixel coordinates (handles swapped axes)."""
         rt_range = self.view_rt_max - self.view_rt_min
         mz_range = self.view_mz_max - self.view_mz_min
 
         if rt_range == 0 or mz_range == 0:
             return (0, 0)
 
-        x = int((rt - self.view_rt_min) / rt_range * self.plot_width)
-        y = int((1 - (mz - self.view_mz_min) / mz_range) * self.plot_height)
+        if self.swap_axes:
+            # m/z on x-axis, RT on y-axis
+            x = int((mz - self.view_mz_min) / mz_range * self.plot_width)
+            y = int((1 - (rt - self.view_rt_min) / rt_range) * self.plot_height)
+        else:
+            # RT on x-axis, m/z on y-axis (traditional)
+            x = int((rt - self.view_rt_min) / rt_range * self.plot_width)
+            y = int((1 - (mz - self.view_mz_min) / mz_range) * self.plot_height)
 
         return (x, y)
 
@@ -1762,6 +1769,8 @@ class MzMLViewer:
 
     def _draw_spectrum_marker_on_plot(self, img: Image.Image) -> Image.Image:
         """Draw a crosshair at the selected spectrum's RT and precursor m/z (for MS2)."""
+        if not self.show_spectrum_marker:
+            return img
         if self.selected_spectrum_idx is None or self.exp is None:
             return img
 
@@ -1796,36 +1805,57 @@ class MzMLViewer:
         except:
             font = ImageFont.load_default()
 
-        # Calculate x position for the RT
-        x, _ = self._data_to_plot_pixel(rt, self.view_mz_min)
+        # Calculate pixel position based on axis orientation
+        x, y = self._data_to_plot_pixel(rt, self.view_mz_min if not self.swap_axes else self.view_mz_max)
 
-        # Draw vertical line at RT (if in view)
+        # Draw marker at RT position - two lines with gap to not obscure peaks
+        # When swap_axes=True: RT on y-axis, draw HORIZONTAL lines
+        # When swap_axes=False: RT on x-axis, draw VERTICAL lines
         if rt_in_view:
-            draw.line([(x, 0), (x, self.plot_height)], fill=line_color, width=2)
+            if self.swap_axes:
+                # RT is on y-axis - draw horizontal lines at y position
+                draw.line([(0, y - 1), (self.plot_width, y - 1)], fill=line_color, width=1)
+                draw.line([(0, y + 1), (self.plot_width, y + 1)], fill=line_color, width=1)
+                # Draw label at left
+                label = f"MS{ms_level} #{self.selected_spectrum_idx}"
+                draw.text((4, y + 4), label, fill=line_color, font=font)
+            else:
+                # RT is on x-axis - draw vertical lines at x position
+                draw.line([(x - 1, 0), (x - 1, self.plot_height)], fill=line_color, width=1)
+                draw.line([(x + 1, 0), (x + 1, self.plot_height)], fill=line_color, width=1)
+                # Draw label at top
+                label = f"MS{ms_level} #{self.selected_spectrum_idx}"
+                draw.text((x + 4, 4), label, fill=line_color, font=font)
 
-            # Draw label at top
-            label = f"MS{ms_level} #{self.selected_spectrum_idx}"
-            draw.text((x + 4, 4), label, fill=line_color, font=font)
-
-        # For MS2 spectra, draw horizontal line at precursor m/z to create crosshair
+        # For MS2 spectra, draw line at precursor m/z to create crosshair
+        # When swap_axes=True: m/z on x-axis, draw VERTICAL line
+        # When swap_axes=False: m/z on y-axis, draw HORIZONTAL line
         if precursor_mz is not None and mz_in_view:
-            _, y = self._data_to_plot_pixel(rt, precursor_mz)
-            draw.line([(0, y), (self.plot_width, y)], fill=line_color, width=2)
+            prec_x, prec_y = self._data_to_plot_pixel(rt, precursor_mz)
 
-            # Draw precursor m/z label on the right
-            mz_label = f"Prec: {precursor_mz:.4f}"
-            bbox = draw.textbbox((0, 0), mz_label, font=font)
-            label_width = bbox[2] - bbox[0]
-            draw.text((self.plot_width - label_width - 4, y - 14), mz_label, fill=line_color, font=font)
+            if self.swap_axes:
+                # m/z is on x-axis - draw vertical line at prec_x
+                draw.line([(prec_x, 0), (prec_x, self.plot_height)], fill=line_color, width=2)
+                # Draw precursor m/z label at top
+                mz_label = f"Prec: {precursor_mz:.4f}"
+                draw.text((prec_x + 4, 4), mz_label, fill=line_color, font=font)
+            else:
+                # m/z is on y-axis - draw horizontal line at prec_y
+                draw.line([(0, prec_y), (self.plot_width, prec_y)], fill=line_color, width=2)
+                # Draw precursor m/z label on the right
+                mz_label = f"Prec: {precursor_mz:.4f}"
+                bbox = draw.textbbox((0, 0), mz_label, font=font)
+                label_width = bbox[2] - bbox[0]
+                draw.text((self.plot_width - label_width - 4, prec_y - 14), mz_label, fill=line_color, font=font)
 
             # Draw crosshair intersection marker (if both RT and m/z are in view)
             if rt_in_view:
                 # Draw a small circle/crosshair at intersection
                 r = 6
-                draw.ellipse([(x - r, y - r), (x + r, y + r)], outline=crosshair_color, width=2)
+                draw.ellipse([(prec_x - r, prec_y - r), (prec_x + r, prec_y + r)], outline=crosshair_color, width=2)
                 # Inner cross for visibility
-                draw.line([(x - r - 2, y), (x + r + 2, y)], fill=crosshair_color, width=1)
-                draw.line([(x, y - r - 2), (x, y + r + 2)], fill=crosshair_color, width=1)
+                draw.line([(prec_x - r - 2, prec_y), (prec_x + r + 2, prec_y)], fill=crosshair_color, width=1)
+                draw.line([(prec_x, prec_y - r - 2), (prec_x, prec_y + r + 2)], fill=crosshair_color, width=1)
 
         img = Image.alpha_composite(img, overlay)
         return img
@@ -1985,57 +2015,99 @@ class MzMLViewer:
         draw.rectangle([plot_left, plot_top, plot_right, plot_bottom],
                        outline=self.axis_color, width=1)
 
-        # X-axis
-        # Calculate ticks in display units (minutes or seconds)
-        if self.rt_in_minutes:
-            display_rt_min = self.view_rt_min / 60.0
-            display_rt_max = self.view_rt_max / 60.0
-            rt_ticks_display = calculate_nice_ticks(display_rt_min, display_rt_max, num_ticks=8)
-            rt_ticks = [t * 60.0 for t in rt_ticks_display]  # Convert back to seconds for positioning
+        # X-axis and Y-axis drawing depends on swap_axes setting
+        if self.swap_axes:
+            # X-axis: m/z
+            x_ticks = calculate_nice_ticks(self.view_mz_min, self.view_mz_max, num_ticks=8)
+            x_range = self.view_mz_max - self.view_mz_min
+            x_min, x_max = self.view_mz_min, self.view_mz_max
+
+            for tick_val in x_ticks:
+                if x_min <= tick_val <= x_max:
+                    x_frac = (tick_val - x_min) / x_range
+                    x = plot_left + int(x_frac * self.plot_width)
+                    draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=self.tick_color, width=1)
+                    label = format_tick_label(tick_val, x_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    draw.text((x - label_width // 2, plot_bottom + 8), label, fill=self.label_color, font=font)
+
+            x_title = "m/z"
+            bbox = draw.textbbox((0, 0), x_title, font=title_font)
+            title_width = bbox[2] - bbox[0]
+            draw.text((plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+                      x_title, fill=self.label_color, font=title_font)
+
+            # Y-axis: RT
+            if self.rt_in_minutes:
+                display_rt_min = self.view_rt_min / 60.0
+                display_rt_max = self.view_rt_max / 60.0
+                y_ticks_display = calculate_nice_ticks(display_rt_min, display_rt_max, num_ticks=8)
+                y_ticks = [t * 60.0 for t in y_ticks_display]
+            else:
+                y_ticks = calculate_nice_ticks(self.view_rt_min, self.view_rt_max, num_ticks=8)
+            y_range = self.view_rt_max - self.view_rt_min
+            y_min, y_max = self.view_rt_min, self.view_rt_max
+
+            for tick_val in y_ticks:
+                if y_min <= tick_val <= y_max:
+                    y_frac = 1 - (tick_val - y_min) / y_range
+                    y = plot_top + int(y_frac * self.plot_height)
+                    draw.line([(plot_left - 5, y), (plot_left, y)], fill=self.tick_color, width=1)
+                    display_val = tick_val / 60.0 if self.rt_in_minutes else tick_val
+                    display_range = y_range / 60.0 if self.rt_in_minutes else y_range
+                    label = format_tick_label(display_val, display_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    label_height = bbox[3] - bbox[1]
+                    draw.text((plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font)
+
+            y_title = "RT (min)" if self.rt_in_minutes else "RT (s)"
         else:
-            rt_ticks = calculate_nice_ticks(self.view_rt_min, self.view_rt_max, num_ticks=8)
-        rt_range = self.view_rt_max - self.view_rt_min
+            # X-axis: RT (default)
+            if self.rt_in_minutes:
+                display_rt_min = self.view_rt_min / 60.0
+                display_rt_max = self.view_rt_max / 60.0
+                rt_ticks_display = calculate_nice_ticks(display_rt_min, display_rt_max, num_ticks=8)
+                rt_ticks = [t * 60.0 for t in rt_ticks_display]
+            else:
+                rt_ticks = calculate_nice_ticks(self.view_rt_min, self.view_rt_max, num_ticks=8)
+            rt_range = self.view_rt_max - self.view_rt_min
 
-        for tick_val in rt_ticks:
-            if self.view_rt_min <= tick_val <= self.view_rt_max:
-                x_frac = (tick_val - self.view_rt_min) / rt_range
-                x = plot_left + int(x_frac * self.plot_width)
+            for tick_val in rt_ticks:
+                if self.view_rt_min <= tick_val <= self.view_rt_max:
+                    x_frac = (tick_val - self.view_rt_min) / rt_range
+                    x = plot_left + int(x_frac * self.plot_width)
+                    draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=self.tick_color, width=1)
+                    display_val = tick_val / 60.0 if self.rt_in_minutes else tick_val
+                    display_range = rt_range / 60.0 if self.rt_in_minutes else rt_range
+                    label = format_tick_label(display_val, display_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    draw.text((x - label_width // 2, plot_bottom + 8), label, fill=self.label_color, font=font)
 
-                draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=self.tick_color, width=1)
+            x_title = "RT (min)" if self.rt_in_minutes else "RT (s)"
+            bbox = draw.textbbox((0, 0), x_title, font=title_font)
+            title_width = bbox[2] - bbox[0]
+            draw.text((plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+                      x_title, fill=self.label_color, font=title_font)
 
-                # Format label in display units
-                display_val = tick_val / 60.0 if self.rt_in_minutes else tick_val
-                display_range = rt_range / 60.0 if self.rt_in_minutes else rt_range
-                label = format_tick_label(display_val, display_range)
-                bbox = draw.textbbox((0, 0), label, font=font)
-                label_width = bbox[2] - bbox[0]
-                draw.text((x - label_width // 2, plot_bottom + 8), label, fill=self.label_color, font=font)
+            # Y-axis: m/z (default)
+            mz_ticks = calculate_nice_ticks(self.view_mz_min, self.view_mz_max, num_ticks=8)
+            mz_range = self.view_mz_max - self.view_mz_min
 
-        x_title = "RT (min)" if self.rt_in_minutes else "RT (s)"
-        bbox = draw.textbbox((0, 0), x_title, font=title_font)
-        title_width = bbox[2] - bbox[0]
-        draw.text((plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
-                  x_title, fill=self.label_color, font=title_font)
+            for tick_val in mz_ticks:
+                if self.view_mz_min <= tick_val <= self.view_mz_max:
+                    y_frac = 1 - (tick_val - self.view_mz_min) / mz_range
+                    y = plot_top + int(y_frac * self.plot_height)
+                    draw.line([(plot_left - 5, y), (plot_left, y)], fill=self.tick_color, width=1)
+                    label = format_tick_label(tick_val, mz_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    label_height = bbox[3] - bbox[1]
+                    draw.text((plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font)
 
-        # Y-axis
-        mz_ticks = calculate_nice_ticks(self.view_mz_min, self.view_mz_max, num_ticks=8)
-        mz_range = self.view_mz_max - self.view_mz_min
-
-        for tick_val in mz_ticks:
-            if self.view_mz_min <= tick_val <= self.view_mz_max:
-                y_frac = 1 - (tick_val - self.view_mz_min) / mz_range
-                y = plot_top + int(y_frac * self.plot_height)
-
-                draw.line([(plot_left - 5, y), (plot_left, y)], fill=self.tick_color, width=1)
-
-                label = format_tick_label(tick_val, mz_range)
-                bbox = draw.textbbox((0, 0), label, font=font)
-                label_width = bbox[2] - bbox[0]
-                label_height = bbox[3] - bbox[1]
-                draw.text((plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font)
-
-        # Y-axis title
-        y_title = "m/z"
+            y_title = "m/z"
         txt_img = Image.new('RGBA', (100, 30), (0, 0, 0, 0))
         txt_draw = ImageDraw.Draw(txt_img)
         txt_draw.text((0, 0), y_title, fill=self.label_color, font=title_font)
@@ -2063,14 +2135,23 @@ class MzMLViewer:
         if len(view_df) == 0:
             return ""
 
-        ds_canvas = ds.Canvas(
-            plot_width=self.plot_width,
-            plot_height=self.plot_height,
-            x_range=(self.view_rt_min, self.view_rt_max),
-            y_range=(self.view_mz_min, self.view_mz_max)
-        )
-
-        agg = ds_canvas.points(view_df, 'rt', 'mz', ds.max('log_intensity'))
+        # Swap axes if enabled (m/z on x-axis, RT on y-axis)
+        if self.swap_axes:
+            ds_canvas = ds.Canvas(
+                plot_width=self.plot_width,
+                plot_height=self.plot_height,
+                x_range=(self.view_mz_min, self.view_mz_max),
+                y_range=(self.view_rt_min, self.view_rt_max)
+            )
+            agg = ds_canvas.points(view_df, 'mz', 'rt', ds.max('log_intensity'))
+        else:
+            ds_canvas = ds.Canvas(
+                plot_width=self.plot_width,
+                plot_height=self.plot_height,
+                x_range=(self.view_rt_min, self.view_rt_max),
+                y_range=(self.view_mz_min, self.view_mz_max)
+            )
+            agg = ds_canvas.points(view_df, 'rt', 'mz', ds.max('log_intensity'))
         img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
         # Use dynspread to make points more visible (dynamically adjusts based on density)
         img = tf.dynspread(img, threshold=0.5, max_px=3)
@@ -2217,13 +2298,19 @@ class MzMLViewer:
         if self.df is None or len(self.df) == 0:
             return None
 
-        # Create minimap canvas (no margins for simplicity)
-        cvs = ds.Canvas(plot_width=self.minimap_width, plot_height=self.minimap_height,
-                        x_range=(self.rt_min, self.rt_max),
-                        y_range=(self.mz_min, self.mz_max))
-
-        # Aggregate using max intensity (same approach as main view for consistent colors)
-        agg = cvs.points(self.df, 'rt', 'mz', agg=ds.max('log_intensity'))
+        # Create minimap canvas - swap axes to match main view
+        if self.swap_axes:
+            # m/z on x-axis, RT on y-axis
+            cvs = ds.Canvas(plot_width=self.minimap_width, plot_height=self.minimap_height,
+                            x_range=(self.mz_min, self.mz_max),
+                            y_range=(self.rt_min, self.rt_max))
+            agg = cvs.points(self.df, 'mz', 'rt', agg=ds.max('log_intensity'))
+        else:
+            # RT on x-axis, m/z on y-axis (traditional)
+            cvs = ds.Canvas(plot_width=self.minimap_width, plot_height=self.minimap_height,
+                            x_range=(self.rt_min, self.rt_max),
+                            y_range=(self.mz_min, self.mz_max))
+            agg = cvs.points(self.df, 'rt', 'mz', agg=ds.max('log_intensity'))
 
         # Apply color map with linear scaling (matches main view)
         img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
@@ -2244,10 +2331,18 @@ class MzMLViewer:
             mz_range = self.mz_max - self.mz_min
 
             if rt_range > 0 and mz_range > 0:
-                x1 = int((self.view_rt_min - self.rt_min) / rt_range * self.minimap_width)
-                x2 = int((self.view_rt_max - self.rt_min) / rt_range * self.minimap_width)
-                y1 = int((self.mz_max - self.view_mz_max) / mz_range * self.minimap_height)
-                y2 = int((self.mz_max - self.view_mz_min) / mz_range * self.minimap_height)
+                if self.swap_axes:
+                    # m/z on x-axis, RT on y-axis
+                    x1 = int((self.view_mz_min - self.mz_min) / mz_range * self.minimap_width)
+                    x2 = int((self.view_mz_max - self.mz_min) / mz_range * self.minimap_width)
+                    y1 = int((self.rt_max - self.view_rt_max) / rt_range * self.minimap_height)
+                    y2 = int((self.rt_max - self.view_rt_min) / rt_range * self.minimap_height)
+                else:
+                    # RT on x-axis, m/z on y-axis (traditional)
+                    x1 = int((self.view_rt_min - self.rt_min) / rt_range * self.minimap_width)
+                    x2 = int((self.view_rt_max - self.rt_min) / rt_range * self.minimap_width)
+                    y1 = int((self.mz_max - self.view_mz_max) / mz_range * self.minimap_height)
+                    y2 = int((self.mz_max - self.view_mz_min) / mz_range * self.minimap_height)
 
                 # Clamp to minimap bounds
                 x1, x2 = max(0, x1), min(self.minimap_width - 1, x2)
@@ -2259,7 +2354,9 @@ class MzMLViewer:
                 # Inner rectangle (yellow)
                 draw.rectangle([x1+1, y1+1, x2-1, y2-1], outline=(255, 255, 0, 255), width=2)
 
-        # Draw spectrum marker (vertical line at selected spectrum RT)
+        # Draw spectrum marker at selected spectrum RT
+        # When swap_axes=True: RT on y-axis, draw HORIZONTAL lines
+        # When swap_axes=False: RT on x-axis, draw VERTICAL lines
         if self.selected_spectrum_idx is not None and self.exp is not None:
             spec = self.exp[self.selected_spectrum_idx]
             rt = spec.getRT()
@@ -2268,8 +2365,6 @@ class MzMLViewer:
             rt_range = self.rt_max - self.rt_min
             if rt_range > 0:
                 draw = ImageDraw.Draw(plot_img)
-                x = int((rt - self.rt_min) / rt_range * self.minimap_width)
-                x = max(0, min(self.minimap_width - 1, x))
 
                 # Use different colors for MS1 vs MS2
                 if ms_level == 1:
@@ -2277,10 +2372,22 @@ class MzMLViewer:
                 else:
                     color = (255, 0, 255, 255)  # Magenta for MS2
 
-                # Draw vertical line with outline for visibility
-                draw.line([(x-1, 0), (x-1, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
-                draw.line([(x+1, 0), (x+1, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
-                draw.line([(x, 0), (x, self.minimap_height)], fill=color, width=2)
+                if self.swap_axes:
+                    # RT is on y-axis - draw horizontal lines
+                    y = int((self.rt_max - rt) / rt_range * self.minimap_height)
+                    y = max(0, min(self.minimap_height - 1, y))
+                    draw.line([(0, y-2), (self.minimap_width, y-2)], fill=(0, 0, 0, 200), width=1)
+                    draw.line([(0, y-1), (self.minimap_width, y-1)], fill=color, width=1)
+                    draw.line([(0, y+1), (self.minimap_width, y+1)], fill=color, width=1)
+                    draw.line([(0, y+2), (self.minimap_width, y+2)], fill=(0, 0, 0, 200), width=1)
+                else:
+                    # RT is on x-axis - draw vertical lines
+                    x = int((rt - self.rt_min) / rt_range * self.minimap_width)
+                    x = max(0, min(self.minimap_width - 1, x))
+                    draw.line([(x-2, 0), (x-2, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
+                    draw.line([(x-1, 0), (x-1, self.minimap_height)], fill=color, width=1)
+                    draw.line([(x+1, 0), (x+1, self.minimap_height)], fill=color, width=1)
+                    draw.line([(x+2, 0), (x+2, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
 
         # Convert to base64
         buffer = io.BytesIO()
@@ -2301,9 +2408,15 @@ class MzMLViewer:
         if self.df is None:
             return
 
-        # Convert minimap fractions to data coordinates
-        rt_click = self.rt_min + x_frac * (self.rt_max - self.rt_min)
-        mz_click = self.mz_max - y_frac * (self.mz_max - self.mz_min)
+        # Convert minimap fractions to data coordinates (depends on axis orientation)
+        if self.swap_axes:
+            # m/z on x-axis, RT on y-axis
+            mz_click = self.mz_min + x_frac * (self.mz_max - self.mz_min)
+            rt_click = self.rt_max - y_frac * (self.rt_max - self.rt_min)
+        else:
+            # RT on x-axis, m/z on y-axis (traditional)
+            rt_click = self.rt_min + x_frac * (self.rt_max - self.rt_min)
+            mz_click = self.mz_max - y_frac * (self.mz_max - self.mz_min)
 
         # Center current view on this point
         rt_half_range = (self.view_rt_max - self.view_rt_min) / 2
@@ -2889,26 +3002,37 @@ class MzMLViewer:
         # Save current state to zoom history
         self.push_zoom_history()
 
-        # Convert fractions to data coordinates
-        rt_point = self.view_rt_min + x_frac * (self.view_rt_max - self.view_rt_min)
-        mz_point = self.view_mz_max - y_frac * (self.view_mz_max - self.view_mz_min)  # Y is inverted
-
-        # Zoom factor
-        factor = 0.7 if zoom_in else 1.4
-
         # Current ranges
         rt_range = self.view_rt_max - self.view_rt_min
         mz_range = self.view_mz_max - self.view_mz_min
+
+        # Zoom factor
+        factor = 0.7 if zoom_in else 1.4
 
         # New ranges
         new_rt_range = rt_range * factor
         new_mz_range = mz_range * factor
 
-        # Keep the point under cursor at same position
-        new_rt_min = rt_point - x_frac * new_rt_range
-        new_rt_max = rt_point + (1 - x_frac) * new_rt_range
-        new_mz_min = mz_point - (1 - y_frac) * new_mz_range
-        new_mz_max = mz_point + y_frac * new_mz_range
+        if self.swap_axes:
+            # swap_axes=True: m/z on x-axis, RT on y-axis
+            mz_point = self.view_mz_min + x_frac * mz_range
+            rt_point = self.view_rt_max - y_frac * rt_range  # Y is inverted
+
+            # Keep the point under cursor at same position
+            new_mz_min = mz_point - x_frac * new_mz_range
+            new_mz_max = mz_point + (1 - x_frac) * new_mz_range
+            new_rt_min = rt_point - (1 - y_frac) * new_rt_range
+            new_rt_max = rt_point + y_frac * new_rt_range
+        else:
+            # swap_axes=False: RT on x-axis, m/z on y-axis
+            rt_point = self.view_rt_min + x_frac * rt_range
+            mz_point = self.view_mz_max - y_frac * mz_range  # Y is inverted
+
+            # Keep the point under cursor at same position
+            new_rt_min = rt_point - x_frac * new_rt_range
+            new_rt_max = rt_point + (1 - x_frac) * new_rt_range
+            new_mz_min = mz_point - (1 - y_frac) * new_mz_range
+            new_mz_max = mz_point + y_frac * new_mz_range
 
         # Clamp to data bounds
         self.view_rt_min = max(self.rt_min, new_rt_min)
@@ -3217,6 +3341,24 @@ def create_ui():
 
                 ui.toggle(['sec', 'min'], value='sec', on_change=toggle_rt_unit).props('dense')
 
+                ui.label('|').classes('text-gray-600 mx-2')
+
+                def toggle_swap_axes():
+                    viewer.swap_axes = swap_axes_cb.value
+                    if viewer.df is not None:
+                        viewer.update_plot()
+
+                swap_axes_cb = ui.checkbox('Swap Axes', value=True, on_change=toggle_swap_axes).props('dense').classes('text-purple-400')
+                ui.tooltip('When checked: m/z on x-axis, RT on y-axis (default). When unchecked: RT on x-axis, m/z on y-axis.')
+
+                def toggle_spectrum_marker():
+                    viewer.show_spectrum_marker = spectrum_marker_cb.value
+                    if viewer.df is not None:
+                        viewer.update_plot()
+
+                spectrum_marker_cb = ui.checkbox('Marker', value=True, on_change=toggle_spectrum_marker).props('dense').classes('text-cyan-400')
+                ui.tooltip('Show/hide the spectrum position marker (crosshair) on the 2D peakmap.')
+
                 # 3D View button
                 ui.label('|').classes('text-gray-600 mx-2')
 
@@ -3324,11 +3466,20 @@ def create_ui():
                                 y1_frac = min(start_plot_y, end_plot_y) / viewer.plot_height
                                 y2_frac = max(start_plot_y, end_plot_y) / viewer.plot_height
 
-                                new_rt_min = viewer.view_rt_min + x1_frac * rt_range
-                                new_rt_max = viewer.view_rt_min + x2_frac * rt_range
-                                # Y is inverted (top = high m/z)
-                                new_mz_max = viewer.view_mz_max - y1_frac * mz_range
-                                new_mz_min = viewer.view_mz_max - y2_frac * mz_range
+                                if viewer.swap_axes:
+                                    # swap_axes=True: m/z on x-axis, RT on y-axis
+                                    new_mz_min = viewer.view_mz_min + x1_frac * mz_range
+                                    new_mz_max = viewer.view_mz_min + x2_frac * mz_range
+                                    # Y is inverted (top = high RT)
+                                    new_rt_max = viewer.view_rt_max - y1_frac * rt_range
+                                    new_rt_min = viewer.view_rt_max - y2_frac * rt_range
+                                else:
+                                    # swap_axes=False: RT on x-axis, m/z on y-axis
+                                    new_rt_min = viewer.view_rt_min + x1_frac * rt_range
+                                    new_rt_max = viewer.view_rt_min + x2_frac * rt_range
+                                    # Y is inverted (top = high m/z)
+                                    new_mz_max = viewer.view_mz_max - y1_frac * mz_range
+                                    new_mz_min = viewer.view_mz_max - y2_frac * mz_range
 
                                 viewer.view_rt_min = new_rt_min
                                 viewer.view_rt_max = new_rt_max
