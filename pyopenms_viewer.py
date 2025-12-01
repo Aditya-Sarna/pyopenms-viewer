@@ -10,11 +10,11 @@ Includes annotated MS2 spectrum viewer for peptide identifications.
 Displays Total Ion Chromatogram (TIC) with clickable MS1 spectrum viewer.
 
 Usage:
-    python mzml_viewer.py                           # Start with empty viewer
-    python mzml_viewer.py sample.mzML               # Load mzML file
-    python mzml_viewer.py sample.mzML features.featureXML  # Load mzML + features
-    python mzml_viewer.py sample.mzML ids.idXML     # Load mzML + identifications
-    python mzml_viewer.py sample.mzML features.featureXML ids.idXML  # All three
+    pyopenms-viewer                           # Start with empty viewer
+    pyopenms-viewer sample.mzML               # Load mzML file
+    pyopenms-viewer sample.mzML features.featureXML  # Load mzML + features
+    pyopenms-viewer sample.mzML ids.idXML     # Load mzML + identifications
+    pyopenms-viewer sample.mzML features.featureXML ids.idXML  # All three
 """
 
 import io
@@ -3894,18 +3894,18 @@ def create_ui():
 @click.option('--native', is_flag=True, default=False, help='Run as native desktop app (requires: pip install pywebview)')
 def main(files, port, host, open, native):
     """
-    mzML Peak Map Viewer - Fast visualization of mass spectrometry data.
+    pyopenms-viewer - Fast visualization of mass spectrometry data.
 
     Pass one or more files to load them automatically:
 
     \b
     Examples:
-        mzml_viewer.py sample.mzML                  # Open with browser
-        mzml_viewer.py sample.mzML --native         # Open as desktop app
-        mzml_viewer.py sample.mzML --no-open        # Start server only
-        mzml_viewer.py sample.mzML features.featureXML
-        mzml_viewer.py sample.mzML ids.idXML
-        mzml_viewer.py data.mzML features.featureXML ids.idXML
+        pyopenms-viewer sample.mzML                  # Open with browser
+        pyopenms-viewer sample.mzML --native         # Open as desktop app
+        pyopenms-viewer sample.mzML --no-open        # Start server only
+        pyopenms-viewer sample.mzML features.featureXML
+        pyopenms-viewer sample.mzML ids.idXML
+        pyopenms-viewer data.mzML features.featureXML ids.idXML
 
     Supported file types (detected by extension):
         .mzML       Mass spectrometry peak data

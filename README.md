@@ -31,19 +31,19 @@ uv sync --extra dev
 
 ```bash
 # Start with empty viewer
-mzml-viewer
+pyopenms-viewer
 
 # Load an mzML file
-mzml-viewer sample.mzML
+pyopenms-viewer sample.mzML
 
 # Load mzML with feature overlay
-mzml-viewer sample.mzML features.featureXML
+pyopenms-viewer sample.mzML features.featureXML
 
 # Load mzML with peptide identifications
-mzml-viewer sample.mzML ids.idXML
+pyopenms-viewer sample.mzML ids.idXML
 
 # Load all three file types
-mzml-viewer sample.mzML features.featureXML ids.idXML
+pyopenms-viewer sample.mzML features.featureXML ids.idXML
 ```
 
 ## Development
