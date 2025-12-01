@@ -461,6 +461,7 @@ class MzMLViewer:
         # Loading state
         self.loading_indicator = None
         self.loading_label = None  # Label for progress text
+        self.loading_progress_bar = None  # Progress bar element
         self.is_loading = False
 
         # 3D visualization
@@ -673,7 +674,7 @@ class MzMLViewer:
             MzMLFile().load(filepath, self.exp)
 
             n_spectra = self.exp.size()
-            self.update_loading_progress(f"Loaded {n_spectra:,} spectra, counting peaks...")
+            self.update_loading_progress(f"Loaded {n_spectra:,} spectra, counting peaks...", 0.05)
 
             total_peaks = sum(spec.size() for spec in self.exp)
 
@@ -681,7 +682,7 @@ class MzMLViewer:
                 ui.notify("No peaks found in file!", type="warning")
                 return False
 
-            self.update_loading_progress(f"Found {total_peaks:,} peaks, detecting FAIMS...")
+            self.update_loading_progress(f"Found {total_peaks:,} peaks, detecting FAIMS...", 0.10)
 
             # First pass: detect FAIMS CVs
             cv_set = set()
@@ -1885,15 +1886,35 @@ class MzMLViewer:
                 self.loading_indicator.style('display: flex;')
                 if self.loading_label:
                     self.loading_label.set_text(message)
+                if self.loading_progress_bar:
+                    self.loading_progress_bar.value = 0
             else:
                 self.loading_indicator.style('display: none;')
+                if self.loading_progress_bar:
+                    self.loading_progress_bar.value = 1.0
 
-    def update_loading_progress(self, message: str):
-        """Update the loading progress message."""
+    def update_loading_progress(self, message: str, progress: float = None):
+        """Update the loading progress message and optional progress bar.
+
+        Args:
+            message: Status message to display
+            progress: Optional progress value 0.0-1.0. If None, tries to parse % from message.
+        """
         if self.loading_label:
             self.loading_label.set_text(message)
         if self.status_label:
             self.status_label.set_text(message)
+
+        # Update progress bar
+        if self.loading_progress_bar:
+            if progress is not None:
+                self.loading_progress_bar.value = progress
+            else:
+                # Try to extract percentage from message like "Extracting peaks... 50%"
+                import re
+                match = re.search(r'(\d+)%', message)
+                if match:
+                    self.loading_progress_bar.value = int(match.group(1)) / 100.0
 
     def _draw_axes(self, canvas: Image.Image) -> Image.Image:
         """Draw axes on canvas."""
@@ -1928,7 +1949,6 @@ class MzMLViewer:
                 x = plot_left + int(x_frac * self.plot_width)
 
                 draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=self.tick_color, width=1)
-                draw.line([(x, plot_top), (x, plot_bottom)], fill=self.grid_color, width=1)
 
                 label = format_tick_label(tick_val, rt_range)
                 bbox = draw.textbbox((0, 0), label, font=font)
@@ -1951,7 +1971,6 @@ class MzMLViewer:
                 y = plot_top + int(y_frac * self.plot_height)
 
                 draw.line([(plot_left - 5, y), (plot_left, y)], fill=self.tick_color, width=1)
-                draw.line([(plot_left, y), (plot_right, y)], fill=self.grid_color, width=1)
 
                 label = format_tick_label(tick_val, mz_range)
                 bbox = draw.textbbox((0, 0), label, font=font)
@@ -3032,7 +3051,7 @@ def create_ui():
 
                     ui.button('Go', on_click=do_goto).props('dense color=primary')
 
-        # FAIMS toggle (hidden by default, shown when FAIMS data is detected) and 3D View toggle
+        # FAIMS toggle (hidden by default, shown when FAIMS data is detected)
         with ui.row().classes('w-full justify-center gap-4 mb-2'):
             def toggle_faims_view():
                 viewer.show_faims_view = faims_toggle.value
@@ -3044,22 +3063,6 @@ def create_ui():
             faims_toggle = ui.checkbox('FAIMS Multi-CV View', value=False, on_change=toggle_faims_view).classes('text-purple-400')
             faims_toggle.set_visibility(False)
             viewer.faims_toggle = faims_toggle
-
-            # 3D View button
-            def toggle_3d_view():
-                viewer.show_3d_view = not viewer.show_3d_view
-                if viewer.scene_3d_container:
-                    viewer.scene_3d_container.set_visibility(viewer.show_3d_view)
-                if viewer.show_3d_view and viewer.df is not None:
-                    viewer.update_3d_view()
-                # Update button appearance
-                if viewer.show_3d_view:
-                    view_3d_btn.props('color=purple')
-                else:
-                    view_3d_btn.props('color=grey')
-
-            view_3d_btn = ui.button('3D Peak View', on_click=toggle_3d_view).props('dense color=grey').classes('text-sm')
-            ui.label('(RT<120s, m/z<50)').classes('text-xs text-gray-500')
 
         # TIC Plot (clickable to show MS1 spectrum, zoomable to update peak map)
         with ui.card().classes('w-full max-w-6xl'):
@@ -3114,7 +3117,7 @@ def create_ui():
             viewer.tic_plot.on('plotly_relayout', on_tic_relayout)
 
         # Main visualization area - peak map with spectrum browser overlay (collapsible)
-        with ui.expansion('2D Peak Map', icon='grid_on', value=False).classes('w-full max-w-6xl'):
+        with ui.expansion('2D Peak Map', icon='grid_on', value=False).classes('w-full max-w-[1700px]'):
             # Display options row
             with ui.row().classes('w-full items-center gap-4 mb-2 flex-wrap'):
                 ui.label('Overlay:').classes('text-xs text-gray-400')
@@ -3159,6 +3162,24 @@ def create_ui():
                 colormap_options = list(COLORMAPS.keys())
                 ui.select(colormap_options, value='jet', on_change=change_colormap).props('dense outlined').classes('w-28')
 
+                # 3D View button
+                ui.label('|').classes('text-gray-600 mx-2')
+
+                def toggle_3d_view():
+                    viewer.show_3d_view = not viewer.show_3d_view
+                    if viewer.scene_3d_container:
+                        viewer.scene_3d_container.set_visibility(viewer.show_3d_view)
+                    if viewer.show_3d_view and viewer.df is not None:
+                        viewer.update_3d_view()
+                    # Update button appearance
+                    if viewer.show_3d_view:
+                        view_3d_btn.props('color=purple')
+                    else:
+                        view_3d_btn.props('color=grey')
+
+                view_3d_btn = ui.button('3D Peak View', on_click=toggle_3d_view).props('dense color=grey').classes('text-sm')
+                ui.label('(RT<120s, m/z<50)').classes('text-xs text-gray-500')
+
             # Breadcrumb trail and coordinate display row
             with ui.row().classes('w-full items-center justify-between mb-1'):
                 with ui.row().classes('items-center gap-2'):
@@ -3168,15 +3189,17 @@ def create_ui():
 
             ui.label('Scroll to zoom, drag to select region, double-click to reset').classes('text-xs text-gray-500 mb-1')
 
-            # Loading indicator overlay
+            # Loading indicator overlay with progress bar
             with ui.element('div').classes('relative'):
                 viewer.loading_indicator = ui.element('div').classes(
-                    'absolute inset-0 flex items-center justify-center bg-black/60 z-50'
+                    'absolute inset-0 flex items-center justify-center bg-black/70 z-50'
                 ).style('display: none;')
                 with viewer.loading_indicator:
-                    with ui.column().classes('items-center gap-2'):
-                        ui.spinner('dots', size='xl', color='cyan')
-                        viewer.loading_label = ui.label('Loading...').classes('text-cyan-400 text-sm font-mono')
+                    with ui.card().classes('p-4 bg-gray-900 w-80'):
+                        with ui.column().classes('items-center gap-3 w-full'):
+                            ui.spinner('dots', size='lg', color='cyan')
+                            viewer.loading_label = ui.label('Loading...').classes('text-cyan-400 text-sm font-mono text-center')
+                            viewer.loading_progress_bar = ui.linear_progress(value=0, show_value=False).classes('w-full').props('color=cyan rounded')
 
             # Peak map with mouse interaction and minimap
             with ui.row().classes('w-full items-start gap-2'):
@@ -3325,9 +3348,9 @@ def create_ui():
                     ui.button('← Back', on_click=go_back).props('dense size=sm color=grey').classes('mt-1').tooltip('Go to previous view')
 
             # 1D Spectrum Browser Plot (directly below peak map, same width)
-            with ui.column().classes('w-full mt-2'):
+            with ui.column().classes('w-full mt-2 items-center'):
                 # Navigation and info row
-                with ui.row().classes('w-full items-center gap-2 mb-1'):
+                with ui.row().classes('w-full items-center gap-2 mb-1').style(f'max-width: {viewer.canvas_width}px;'):
                     ui.label('1D Spectrum:').classes('text-sm font-semibold text-gray-300')
                     ui.button('|<', on_click=lambda: viewer.show_spectrum_in_browser(0)).props('dense size=sm').tooltip('First')
                     ui.button('< MS1', on_click=lambda: viewer.navigate_spectrum_by_ms_level(-1, 1)).props('dense size=sm color=cyan').tooltip('Prev MS1')
