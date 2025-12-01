@@ -2617,7 +2617,9 @@ class MzMLViewer:
                     aspectratio=dict(x=1.5, y=1, z=0.8)
                 ),
                 margin=dict(l=0, r=0, t=0, b=0),
+                width=self.canvas_width,
                 height=500,
+                autosize=False,
                 showlegend=True,
                 legend=dict(x=0, y=1, bgcolor='rgba(26,26,31,0.8)'),
                 modebar=dict(orientation='v', bgcolor='rgba(0,0,0,0)')
@@ -3513,10 +3515,14 @@ def create_ui():
                         empty_fig.update_layout(
                             paper_bgcolor='#1a1a1f',
                             plot_bgcolor='#1a1a1f',
-                            height=400,
+                            width=viewer.canvas_width,
+                            height=500,
+                            autosize=False,
                             margin=dict(l=0, r=0, t=0, b=0)
                         )
-                        viewer.plot_3d = ui.plotly(empty_fig).style(f'width: {viewer.canvas_width}px;')
+                        # Wrap in explicit div for sizing
+                        with ui.element('div').style(f'width: {viewer.canvas_width}px; height: 500px;'):
+                            viewer.plot_3d = ui.plotly(empty_fig).classes('w-full h-full')
 
                 # Minimap panel (to the right of peak map)
                 with ui.column().classes('flex-none'):
