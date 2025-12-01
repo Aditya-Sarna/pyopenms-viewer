@@ -2030,7 +2030,7 @@ class MzMLViewer:
             y_range=(self.view_mz_min, self.view_mz_max)
         )
 
-        agg = ds_canvas.points(view_df, 'rt', 'mz', ds.mean('log_intensity'))
+        agg = ds_canvas.points(view_df, 'rt', 'mz', ds.max('log_intensity'))
         img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
         # Use dynspread to make points more visible (dynamically adjusts based on density)
         img = tf.dynspread(img, threshold=0.5, max_px=3)
@@ -2091,7 +2091,7 @@ class MzMLViewer:
             y_range=(self.view_mz_min, self.view_mz_max)
         )
 
-        agg = ds_canvas.points(view_df, 'rt', 'mz', ds.mean('log_intensity'))
+        agg = ds_canvas.points(view_df, 'rt', 'mz', ds.max('log_intensity'))
         img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
         img = tf.dynspread(img, threshold=0.5, max_px=3)
         img = tf.set_background(img, get_colormap_background(self.colormap))
