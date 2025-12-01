@@ -297,8 +297,8 @@ def create_annotated_spectrum_plot(
         )
     )
 
-    fig.update_xaxes(range=[0, max(exp_mz) * 1.05] if len(exp_mz) > 0 else [0, 2000])
-    fig.update_yaxes(range=[0, 110])
+    fig.update_xaxes(range=[0, max(exp_mz) * 1.05] if len(exp_mz) > 0 else [0, 2000], showgrid=False)
+    fig.update_yaxes(range=[0, 110], showgrid=False)
 
     return fig
 
@@ -433,12 +433,15 @@ class MzMLViewer:
         self.feature_table = None
         self.id_table = None
         self.tic_plot = None
+        self.tic_expansion = None  # Collapsible panel for TIC
 
         # Spectrum browser UI elements
         self.spectrum_table = None
+        self.spectrum_table_expansion = None  # Collapsible panel for Spectrum Table
         self.spectrum_browser_plot = None
         self.spectrum_browser_info = None
         self.spectrum_nav_label = None
+        self.spectrum_expansion = None  # Collapsible panel for 1D Spectrum
 
         # FAIMS UI elements
         self.faims_container = None  # Container for multiple peak maps
@@ -1117,7 +1120,9 @@ class MzMLViewer:
                 template="plotly_dark",
                 height=350,
                 margin=dict(l=60, r=20, t=50, b=50),
-                showlegend=False
+                showlegend=False,
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=False)
             )
 
             fig.update_yaxes(range=y_range)
@@ -2254,6 +2259,29 @@ class MzMLViewer:
                 # Inner rectangle (yellow)
                 draw.rectangle([x1+1, y1+1, x2-1, y2-1], outline=(255, 255, 0, 255), width=2)
 
+        # Draw spectrum marker (vertical line at selected spectrum RT)
+        if self.selected_spectrum_idx is not None and self.exp is not None:
+            spec = self.exp[self.selected_spectrum_idx]
+            rt = spec.getRT()
+            ms_level = spec.getMSLevel()
+
+            rt_range = self.rt_max - self.rt_min
+            if rt_range > 0:
+                draw = ImageDraw.Draw(plot_img)
+                x = int((rt - self.rt_min) / rt_range * self.minimap_width)
+                x = max(0, min(self.minimap_width - 1, x))
+
+                # Use different colors for MS1 vs MS2
+                if ms_level == 1:
+                    color = (0, 255, 0, 255)  # Green for MS1
+                else:
+                    color = (255, 0, 255, 255)  # Magenta for MS2
+
+                # Draw vertical line with outline for visibility
+                draw.line([(x-1, 0), (x-1, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
+                draw.line([(x+1, 0), (x+1, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
+                draw.line([(x, 0), (x, self.minimap_height)], fill=color, width=2)
+
         # Convert to base64
         buffer = io.BytesIO()
         plot_img.save(buffer, format='PNG')
@@ -2969,9 +2997,15 @@ def create_ui():
                         if success:
                             viewer.update_plot()
                             viewer.update_tic_plot()
-                            # Show first spectrum in 1D browser
+                            # Show first spectrum in 1D browser and expand panels
                             if viewer.exp and viewer.exp.size() > 0:
                                 viewer.show_spectrum_in_browser(0)
+                                if viewer.spectrum_expansion is not None:
+                                    viewer.spectrum_expansion.set_value(True)
+                                if viewer.tic_expansion is not None:
+                                    viewer.tic_expansion.set_value(True)
+                                if viewer.spectrum_table_expansion is not None:
+                                    viewer.spectrum_table_expansion.set_value(True)
                             info_text = f"Loaded: {original_name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
                             if viewer.has_faims:
                                 info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
@@ -3073,8 +3107,9 @@ def create_ui():
             viewer.faims_toggle = faims_toggle
 
         # TIC Plot (clickable to show MS1 spectrum, zoomable to update peak map)
-        with ui.card().classes('w-full max-w-6xl'):
-            ui.label('TIC - Click to view spectrum, drag to zoom RT range').classes('text-xs text-gray-500 mb-1')
+        viewer.tic_expansion = ui.expansion('TIC (Total Ion Chromatogram)', icon='show_chart', value=False).classes('w-full max-w-[1700px]')
+        with viewer.tic_expansion:
+            ui.label('Click to view spectrum, drag to zoom RT range').classes('text-xs text-gray-500 mb-1')
             viewer.tic_plot = ui.plotly(viewer.create_tic_plot()).classes('w-full')
 
             # Handle click on TIC plot - show closest spectrum and center peak map
@@ -3355,8 +3390,9 @@ def create_ui():
 
                     ui.button('← Back', on_click=go_back).props('dense size=sm color=grey').classes('mt-1').tooltip('Go to previous view')
 
-        # 1D Spectrum Browser (collapsible panel)
-        with ui.expansion('1D Spectrum', icon='show_chart', value=True).classes('w-full max-w-[1700px]'):
+        # 1D Spectrum Browser (collapsible panel, starts collapsed until file is loaded)
+        viewer.spectrum_expansion = ui.expansion('1D Spectrum', icon='show_chart', value=False).classes('w-full max-w-[1700px]')
+        with viewer.spectrum_expansion:
             with ui.column().classes('w-full items-center'):
                 # Navigation and info row
                 with ui.row().classes('w-full items-center gap-2 mb-1').style(f'max-width: {viewer.canvas_width}px;'):
@@ -3450,7 +3486,8 @@ def create_ui():
                 viewer.plot_3d = ui.plotly(empty_fig).classes('w-full').style('margin-top: -10px;')
 
         # Spectrum Table (moved up for better visibility)
-        with ui.expansion('Spectrum Table', icon='list', value=True).classes('w-full max-w-6xl mt-2'):
+        viewer.spectrum_table_expansion = ui.expansion('Spectrum Table', icon='list', value=False).classes('w-full max-w-[1700px]')
+        with viewer.spectrum_table_expansion:
             ui.label('Click a row to view the spectrum in the 1D viewer above').classes('text-sm text-gray-400 mb-2')
 
             # Filters row
@@ -3513,7 +3550,7 @@ def create_ui():
             viewer.spectrum_table.props('dark flat bordered dense')
 
         # Feature Table
-        with ui.expansion('Features', icon='scatter_plot').classes('w-full max-w-6xl mt-2'):
+        with ui.expansion('Features', icon='scatter_plot').classes('w-full max-w-[1700px]'):
             ui.label('Click a row to zoom to that feature').classes('text-sm text-gray-400 mb-2')
 
             # Feature filters row
@@ -3583,7 +3620,7 @@ def create_ui():
             viewer.feature_table.props('dark flat bordered dense')
 
         # ID Table
-        with ui.expansion('Identifications', icon='biotech').classes('w-full max-w-6xl mt-2'):
+        with ui.expansion('Identifications', icon='biotech').classes('w-full max-w-[1700px] mt-2'):
             ui.label('Click a row to zoom and view annotated spectrum').classes('text-sm text-gray-400 mb-2')
 
             # ID filters row
@@ -3649,7 +3686,7 @@ def create_ui():
             viewer.id_table.props('dark flat bordered dense')
 
         # Custom range
-        with ui.expansion('Custom Range', icon='tune').classes('w-full max-w-4xl mt-4'):
+        with ui.expansion('Custom Range', icon='tune').classes('w-full max-w-[1700px] mt-4'):
             with ui.row().classes('w-full gap-4 items-end'):
                 rt_min_input = ui.number(label='RT Min (s)', value=0, format='%.2f')
                 rt_max_input = ui.number(label='RT Max (s)', value=1000, format='%.2f')
@@ -3665,7 +3702,7 @@ def create_ui():
                 ui.button('Apply Range', on_click=apply_range).props('color=primary')
 
         # Legend
-        with ui.expansion('Legend & Help', icon='help').classes('w-full max-w-4xl mt-2'):
+        with ui.expansion('Legend & Help', icon='help').classes('w-full max-w-[1700px] mt-2'):
             with ui.row().classes('gap-8 flex-wrap'):
                 with ui.column():
                     ui.label('Overlay Colors:').classes('font-semibold')
