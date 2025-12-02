@@ -467,6 +467,7 @@ class MzMLViewer:
         self.protein_ids = []
         self.id_file = None
         self.id_data = []
+        self.id_meta_keys = []  # Discovered meta value keys from PeptideIdentification/PeptideHit
 
         # TIC data
         self.tic_rt = None
@@ -519,11 +520,13 @@ class MzMLViewer:
         self.show_spectrum_marker = True  # Show spectrum marker (crosshair) on 2D peakmap
         self.show_convex_hulls = False    # Disabled by default for faster rendering
         self.show_ids = True
+        self.show_id_sequences = False  # Show peptide sequences on 2D peakmap (off by default)
         self.colormap = 'jet'  # Default colormap
         self.rt_in_minutes = False  # Display RT in minutes instead of seconds
         self.spectrum_intensity_percent = True  # Display spectrum intensity as percentage (vs absolute)
         self.annotate_peaks = True  # Annotate peaks in spectrum view when ID is selected
         self.annotation_tolerance_da = 0.05  # Mass tolerance for peak annotation in Da
+        self.show_all_hits = False  # Show all peptide hits, not just the best hit
 
         # Colors
         self.centroid_color = (0, 255, 100, 255)
@@ -1156,9 +1159,29 @@ class MzMLViewer:
         """Link peptide IDs to spectra by matching RT and precursor m/z.
 
         Updates spectrum_data with ID info (sequence, score) for matching MS2 spectra.
+        Also collects meta value keys from PeptideIdentification and PeptideHit.
         """
         if not self.peptide_ids or not self.spectrum_data:
             return
+
+        # Collect unique meta value keys from all IDs
+        meta_keys_set = set()
+        for pep_id in self.peptide_ids:
+            # Get PeptideIdentification meta values
+            pid_keys = []
+            pep_id.getKeys(pid_keys)
+            for key in pid_keys:
+                meta_keys_set.add(f"pid:{key.decode() if isinstance(key, bytes) else key}")
+
+            # Get PeptideHit meta values
+            hits = pep_id.getHits()
+            if hits:
+                hit_keys = []
+                hits[0].getKeys(hit_keys)
+                for key in hit_keys:
+                    meta_keys_set.add(f"hit:{key.decode() if isinstance(key, bytes) else key}")
+
+        self.id_meta_keys = sorted(list(meta_keys_set))
 
         # Build lookup of spectrum indices by approximate RT for faster matching
         for spec_row in self.spectrum_data:
@@ -1167,6 +1190,11 @@ class MzMLViewer:
             spec_row['full_sequence'] = ''
             spec_row['score'] = '-'
             spec_row['id_idx'] = None
+            spec_row['hit_rank'] = '-'
+            spec_row['all_hits'] = []  # Store all hits for this spectrum
+            # Initialize meta value fields
+            for meta_key in self.id_meta_keys:
+                spec_row[meta_key] = '-'
 
         # For each ID, find matching spectrum
         for id_idx, pep_id in enumerate(self.peptide_ids):
@@ -1177,10 +1205,49 @@ class MzMLViewer:
             if not hits:
                 continue
 
-            best_hit = hits[0]
-            sequence = best_hit.getSequence().toString()
-            score = best_hit.getScore()
-            charge = best_hit.getCharge()
+            # Collect PeptideIdentification meta values (shared by all hits)
+            pid_meta_values = {}
+            pid_keys = []
+            pep_id.getKeys(pid_keys)
+            for key in pid_keys:
+                key_str = key.decode() if isinstance(key, bytes) else key
+                value = pep_id.getMetaValue(key)
+                if isinstance(value, bytes):
+                    value = value.decode()
+                elif isinstance(value, float):
+                    value = round(value, 4)
+                pid_meta_values[f"pid:{key_str}"] = value
+
+            # Collect data for all hits (rank = position in list, 1-indexed)
+            all_hits_data = []
+            for hit_idx, hit in enumerate(hits):
+                sequence = hit.getSequence().toString()
+                score = hit.getScore()
+                charge = hit.getCharge()
+
+                # Collect hit-specific meta values
+                hit_meta_values = dict(pid_meta_values)  # Start with PID meta values
+                hit_keys = []
+                hit.getKeys(hit_keys)
+                for key in hit_keys:
+                    key_str = key.decode() if isinstance(key, bytes) else key
+                    value = hit.getMetaValue(key)
+                    if isinstance(value, bytes):
+                        value = value.decode()
+                    elif isinstance(value, float):
+                        value = round(value, 4)
+                    hit_meta_values[f"hit:{key_str}"] = value
+
+                all_hits_data.append({
+                    'sequence': sequence[:25] + "..." if len(sequence) > 25 else sequence,
+                    'full_sequence': sequence,
+                    'score': round(score, 4) if score != 0 else '-',
+                    'charge': charge,
+                    'hit_rank': hit_idx + 1,  # 1-indexed position in list
+                    'id_idx': id_idx,
+                    'hit_idx': hit_idx,  # 0-indexed for internal use
+                    'meta_values': hit_meta_values,
+                })
 
             # Find best matching MS2 spectrum
             best_spec_idx = None
@@ -1208,15 +1275,20 @@ class MzMLViewer:
                     if spec_row['idx'] == best_spec_idx:
                         # Only update if this is a better match (closer RT) or no existing match
                         if spec_row['id_idx'] is None or best_rt_diff < spec_row.get('_rt_diff', float('inf')):
-                            seq_display = sequence[:25] + "..." if len(sequence) > 25 else sequence
-                            spec_row['sequence'] = seq_display
-                            spec_row['full_sequence'] = sequence
-                            spec_row['score'] = round(score, 4) if score != 0 else '-'
+                            best_hit_data = all_hits_data[0]
+                            spec_row['sequence'] = best_hit_data['sequence']
+                            spec_row['full_sequence'] = best_hit_data['full_sequence']
+                            spec_row['score'] = best_hit_data['score']
                             spec_row['id_idx'] = id_idx
+                            spec_row['hit_rank'] = 1
+                            spec_row['all_hits'] = all_hits_data
                             spec_row['_rt_diff'] = best_rt_diff
+                            # Add meta values from best hit
+                            for key, value in best_hit_data['meta_values'].items():
+                                spec_row[key] = value
                             # Also update charge from ID if precursor charge is missing
-                            if spec_row['precursor_z'] == '-' and charge > 0:
-                                spec_row['precursor_z'] = charge
+                            if spec_row['precursor_z'] == '-' and best_hit_data['charge'] > 0:
+                                spec_row['precursor_z'] = best_hit_data['charge']
                         break
 
     def show_spectrum_in_browser(self, spectrum_idx: int):
@@ -2097,13 +2169,24 @@ class MzMLViewer:
         return img
 
     def _draw_ids_on_plot(self, img: Image.Image) -> Image.Image:
-        """Draw peptide ID precursor positions."""
+        """Draw peptide ID precursor positions and optionally sequence labels."""
         if not self.peptide_ids or not self.show_ids:
             return img
 
         img = img.convert('RGBA')
         overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
+
+        # Load font for sequence labels
+        font = None
+        if self.show_id_sequences:
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 9)
+            except Exception:
+                try:
+                    font = ImageFont.load_default()
+                except Exception:
+                    font = None
 
         for idx, pep_id in enumerate(self.peptide_ids):
             rt = pep_id.getRT()
@@ -2124,6 +2207,30 @@ class MzMLViewer:
             if is_selected:
                 draw.line([(cx - r - 3, cy), (cx + r + 3, cy)], fill=color, width=2)
                 draw.line([(cx, cy - r - 3), (cx, cy + r + 3)], fill=color, width=2)
+
+            # Draw sequence label if enabled
+            if self.show_id_sequences and font is not None:
+                hits = pep_id.getHits()
+                if hits:
+                    seq = hits[0].getSequence().toString()
+                    # Truncate long sequences
+                    if len(seq) > 12:
+                        seq = seq[:10] + ".."
+                    # Draw with background for readability
+                    bbox = draw.textbbox((0, 0), seq, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    text_x = cx + r + 3
+                    text_y = cy - text_height // 2
+                    # Keep text within plot bounds
+                    if text_x + text_width > self.plot_width:
+                        text_x = cx - r - 3 - text_width
+                    # Background rectangle
+                    draw.rectangle(
+                        [(text_x - 1, text_y - 1), (text_x + text_width + 1, text_y + text_height + 1)],
+                        fill=(0, 0, 0, 180)
+                    )
+                    draw.text((text_x, text_y), seq, fill=(255, 255, 255, 255), font=font)
 
         img = Image.alpha_composite(img, overlay)
         return img
@@ -3565,6 +3672,14 @@ def create_ui():
 
                 ids_cb = ui.checkbox('Identifications', value=True, on_change=toggle_ids).props('dense').classes('text-orange-400')
 
+                def toggle_id_sequences():
+                    viewer.show_id_sequences = id_seq_cb.value
+                    if viewer.df is not None:
+                        viewer.update_plot()
+
+                id_seq_cb = ui.checkbox('Sequences', value=False, on_change=toggle_id_sequences).props('dense').classes('text-orange-300')
+                ui.tooltip('Show peptide sequences on 2D peakmap')
+
                 ui.label('|').classes('text-gray-600 mx-2')
                 ui.label('Colormap:').classes('text-xs text-gray-400')
 
@@ -3895,6 +4010,14 @@ def create_ui():
                 show_advanced = ui.checkbox('Advanced', value=False).props('dense').classes('text-xs text-gray-400')
                 ui.tooltip('Show additional columns: Peaks, TIC, BPI, m/z Range')
 
+                # Meta Values columns toggle
+                show_meta_values = ui.checkbox('Meta Values', value=False).props('dense').classes('text-xs text-gray-400')
+                ui.tooltip('Show PeptideIdentification (pid:) and PeptideHit (hit:) meta values')
+
+                # All Hits toggle - shows all peptide hits, not just best hit
+                show_all_hits = ui.checkbox('All Hits', value=False).props('dense').classes('text-xs text-gray-400')
+                ui.tooltip('Show all peptide hits for each spectrum (default: best hit only)')
+
             # Additional filters row
             with ui.row().classes('w-full items-end gap-2 mb-2 flex-wrap'):
                 ui.label('Filter:').classes('text-xs text-gray-400')
@@ -3940,12 +4063,52 @@ def create_ui():
                 {'name': 'score', 'label': 'Score', 'field': 'score', 'sortable': True, 'align': 'right'},
             ]
 
+            # Rank column (shown when All Hits is enabled)
+            rank_column = {'name': 'hit_rank', 'label': 'Rank', 'field': 'hit_rank', 'sortable': True, 'align': 'center'}
+
             advanced_columns = [
                 {'name': 'n_peaks', 'label': 'Peaks', 'field': 'n_peaks', 'sortable': True, 'align': 'right'},
                 {'name': 'tic', 'label': 'TIC', 'field': 'tic', 'sortable': True, 'align': 'right'},
                 {'name': 'bpi', 'label': 'BPI', 'field': 'bpi', 'sortable': True, 'align': 'right'},
                 {'name': 'mz_range', 'label': 'm/z Range', 'field': 'mz_range', 'sortable': False, 'align': 'center'},
             ]
+
+            def get_meta_columns():
+                """Generate columns for meta values from PeptideIdentification and PeptideHit."""
+                meta_cols = []
+                for key in viewer.id_meta_keys:
+                    # Create readable label from key (e.g., "pid:spectrum_reference" -> "Spectrum Ref (PID)")
+                    prefix, name = key.split(':', 1) if ':' in key else ('', key)
+                    # Shorten common prefixes
+                    label_prefix = 'PID' if prefix == 'pid' else 'Hit' if prefix == 'hit' else prefix.upper()
+                    # Convert underscores to spaces and title case
+                    label_name = name.replace('_', ' ').title()
+                    # Truncate long names
+                    if len(label_name) > 15:
+                        label_name = label_name[:13] + '..'
+                    label = f"{label_name} ({label_prefix})"
+                    meta_cols.append({
+                        'name': key,
+                        'label': label,
+                        'field': key,
+                        'sortable': True,
+                        'align': 'left',
+                    })
+                return meta_cols
+
+            def build_columns():
+                """Build column list based on current toggle states."""
+                cols = basic_columns[:3]  # idx, rt, ms_level
+                if show_advanced.value:
+                    cols = cols + advanced_columns
+                cols = cols + basic_columns[3:5]  # precursor_mz, z
+                # Add rank column if All Hits is enabled (before sequence)
+                if show_all_hits.value:
+                    cols = cols + [rank_column]
+                cols = cols + basic_columns[5:]  # sequence, score
+                if show_meta_values.value:
+                    cols = cols + get_meta_columns()
+                return cols
 
             def get_filtered_data():
                 """Filter spectrum data based on view mode and filters."""
@@ -3964,7 +4127,34 @@ def create_ui():
                 if spec_rt_max.value is not None:
                     data = [s for s in data if s['rt'] <= spec_rt_max.value]
 
-                # Apply sequence filter
+                # Expand to all hits if enabled
+                if show_all_hits.value:
+                    expanded_data = []
+                    for s in data:
+                        all_hits = s.get('all_hits', [])
+                        if all_hits:
+                            # Create a row for each hit
+                            for hit_data in all_hits:
+                                row = dict(s)  # Copy spectrum base data
+                                row['sequence'] = hit_data['sequence']
+                                row['full_sequence'] = hit_data['full_sequence']
+                                row['score'] = hit_data['score']
+                                row['hit_rank'] = hit_data['hit_rank']
+                                row['hit_idx'] = hit_data['hit_idx']
+                                # Add meta values from this hit
+                                for key, value in hit_data['meta_values'].items():
+                                    row[key] = value
+                                # Create unique row key for table
+                                row['row_key'] = f"{s['idx']}_{hit_data['hit_rank']}"
+                                expanded_data.append(row)
+                        else:
+                            # No hits - keep row as is
+                            row = dict(s)
+                            row['row_key'] = f"{s['idx']}_0"
+                            expanded_data.append(row)
+                    data = expanded_data
+
+                # Apply sequence filter (after expansion so it filters all hits)
                 if spec_seq_pattern.value:
                     pattern = spec_seq_pattern.value.upper()
                     data = [s for s in data if pattern in s.get('full_sequence', '').upper()]
@@ -3980,30 +4170,24 @@ def create_ui():
                 """Update table with current filters and column visibility."""
                 filtered = get_filtered_data()
                 viewer.spectrum_table.rows = filtered
-
-                # Update columns based on advanced toggle
-                if show_advanced.value:
-                    # Insert advanced columns after ms_level
-                    cols = basic_columns[:3] + advanced_columns + basic_columns[3:]
-                else:
-                    cols = basic_columns
-
-                viewer.spectrum_table.columns = cols
+                viewer.spectrum_table.columns = build_columns()
                 ui.notify(f"Showing {len(filtered)} spectra", type="info")
 
             def on_view_mode_change(e):
                 update_table()
 
-            def on_advanced_change(e):
-                # Update columns based on advanced toggle
-                if show_advanced.value:
-                    cols = basic_columns[:3] + advanced_columns + basic_columns[3:]
-                else:
-                    cols = basic_columns
-                viewer.spectrum_table.columns = cols
+            def on_column_toggle_change(e):
+                """Update columns when Advanced or Meta Values checkbox changes."""
+                viewer.spectrum_table.columns = build_columns()
+
+            def on_all_hits_change(e):
+                """Update both columns and rows when All Hits checkbox changes."""
+                update_table()
 
             view_mode.on('update:model-value', on_view_mode_change)
-            show_advanced.on('update:model-value', on_advanced_change)
+            show_advanced.on('update:model-value', on_column_toggle_change)
+            show_meta_values.on('update:model-value', on_column_toggle_change)
+            show_all_hits.on('update:model-value', on_all_hits_change)
 
             # Filter buttons
             with ui.row().classes('gap-2 mb-2'):
@@ -4015,6 +4199,9 @@ def create_ui():
                     spec_rt_max.value = None
                     spec_seq_pattern.value = ''
                     spec_min_score.value = None
+                    show_advanced.value = False
+                    show_meta_values.value = False
+                    show_all_hits.value = False
                     viewer.spectrum_table.rows = viewer.spectrum_data
                     viewer.spectrum_table.columns = basic_columns
 
