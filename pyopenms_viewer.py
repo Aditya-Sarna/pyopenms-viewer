@@ -17,64 +17,67 @@ Usage:
     pyopenms-viewer sample.mzML features.featureXML ids.idXML  # All three
 """
 
-import asyncio
-import io
-import os
-import sys
 import base64
+import io
 import math
+import os
 import tempfile
+from pathlib import Path
+from typing import Any, Optional
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
 
 # Set OpenMP threads for pyOpenMS to use all available cores
-os.environ.setdefault('OMP_NUM_THREADS', str(os.cpu_count()))
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count()))
 
 import click
-import plotly.graph_objects as go
+import colorcet as cc
 
 # Datashader for fast rendering
 import datashader as ds
 import datashader.transfer_functions as tf
-import colorcet as cc
+import matplotlib
+import plotly.graph_objects as go
+
+# NiceGUI for the web interface
+from nicegui import run, ui
 
 # PIL for drawing overlays and axes
 from PIL import Image, ImageDraw, ImageFont
 
 # pyOpenMS for file loading and spectrum annotation
 from pyopenms import (
-    MSExperiment, MzMLFile,
-    FeatureMap, FeatureXMLFile,
-    IdXMLFile, PeptideIdentification, ProteinIdentification,
-    TheoreticalSpectrumGenerator, AASequence, Param,
-    MSSpectrum, SpectrumAnnotator, SpectrumAlignment
+    AASequence,
+    FeatureMap,
+    FeatureXMLFile,
+    IdXMLFile,
+    MSExperiment,
+    MSSpectrum,
+    MzMLFile,
+    SpectrumAlignment,
+    SpectrumAnnotator,
+    TheoreticalSpectrumGenerator,
 )
 
-# NiceGUI for the web interface
-from nicegui import ui, app, run
-from nicegui.events import GenericEventArguments
-
-
 # CLI files to load on startup
-_cli_files = {'mzml': None, 'featurexml': None, 'idxml': None}
+_cli_files = {"mzml": None, "featurexml": None, "idxml": None}
 
 
 # Ion type colors for spectrum annotation
 ION_COLORS = {
-    'b': '#1f77b4',  # Blue
-    'y': '#d62728',  # Red
-    'a': '#2ca02c',  # Green
-    'c': '#9467bd',  # Purple
-    'x': '#8c564b',  # Brown
-    'z': '#e377c2',  # Pink
-    'precursor': '#ff7f0e',  # Orange
-    'unknown': '#7f7f7f',  # Gray
+    "b": "#1f77b4",  # Blue
+    "y": "#d62728",  # Red
+    "a": "#2ca02c",  # Green
+    "c": "#9467bd",  # Purple
+    "x": "#8c564b",  # Brown
+    "z": "#e377c2",  # Pink
+    "precursor": "#ff7f0e",  # Orange
+    "unknown": "#7f7f7f",  # Gray
 }
 
 
-def calculate_nice_ticks(vmin: float, vmax: float, num_ticks: int = 6) -> List[float]:
+def calculate_nice_ticks(vmin: float, vmax: float, num_ticks: int = 6) -> list[float]:
     """Calculate nice round tick values for an axis."""
     if vmin >= vmax:
         return [vmin]
@@ -83,7 +86,7 @@ def calculate_nice_ticks(vmin: float, vmax: float, num_ticks: int = 6) -> List[f
     rough_step = range_val / (num_ticks - 1)
 
     mag = math.floor(math.log10(rough_step))
-    pow10 = 10 ** mag
+    pow10 = 10**mag
     norm_step = rough_step / pow10
 
     if norm_step < 1.5:
@@ -120,7 +123,7 @@ def format_tick_label(value: float, range_val: float) -> str:
         return f"{value:.3f}"
 
 
-def generate_theoretical_spectrum(sequence: AASequence, charge: int) -> Dict[str, List[Tuple[float, str]]]:
+def generate_theoretical_spectrum(sequence: AASequence, charge: int) -> dict[str, list[tuple[float, str]]]:
     """Generate theoretical b/y ion spectrum for annotation."""
     tsg = TheoreticalSpectrumGenerator()
     spec = MSSpectrum()
@@ -138,32 +141,30 @@ def generate_theoretical_spectrum(sequence: AASequence, charge: int) -> Dict[str
 
     tsg.getSpectrum(spec, sequence, 1, min(charge, 2))
 
-    ions = {'b': [], 'y': [], 'other': []}
+    ions = {"b": [], "y": [], "other": []}
 
     for i in range(spec.size()):
         mz = spec[i].getMZ()
-        intensity = spec[i].getIntensity()
+        spec[i].getIntensity()
 
         # Get ion annotation from metadata
         ion_name = ""
         if spec[i].metaValueExists("IonName"):
             ion_name = spec[i].getMetaValue("IonName")
 
-        if ion_name.startswith('b'):
-            ions['b'].append((mz, ion_name))
-        elif ion_name.startswith('y'):
-            ions['y'].append((mz, ion_name))
+        if ion_name.startswith("b"):
+            ions["b"].append((mz, ion_name))
+        elif ion_name.startswith("y"):
+            ions["y"].append((mz, ion_name))
         else:
-            ions['other'].append((mz, ion_name))
+            ions["other"].append((mz, ion_name))
 
     return ions
 
 
 def annotate_spectrum_with_id(
-    spectrum: MSSpectrum,
-    peptide_hit,
-    tolerance_da: float = 0.05
-) -> List[Tuple[int, str, str]]:
+    spectrum: MSSpectrum, peptide_hit, tolerance_da: float = 0.05
+) -> list[tuple[int, str, str]]:
     """Annotate a spectrum using SpectrumAnnotator.
 
     Returns list of (peak_index, ion_name, ion_type) tuples for matched peaks.
@@ -219,26 +220,26 @@ def annotate_spectrum_with_id(
                     if ann_str:
                         # Handle bytes or string annotation
                         if isinstance(ann_str, bytes):
-                            ann_str = ann_str.decode('utf-8', errors='ignore')
+                            ann_str = ann_str.decode("utf-8", errors="ignore")
 
                         # Clean up the annotation
                         ion_name = ann_str.strip("'\"")
 
                         # Determine ion type from the cleaned name
-                        if ion_name.startswith('y'):
-                            ion_type = 'y'
-                        elif ion_name.startswith('b'):
-                            ion_type = 'b'
-                        elif ion_name.startswith('a'):
-                            ion_type = 'a'
-                        elif ion_name.startswith('c'):
-                            ion_type = 'c'
-                        elif ion_name.startswith('x'):
-                            ion_type = 'x'
-                        elif ion_name.startswith('z'):
-                            ion_type = 'z'
+                        if ion_name.startswith("y"):
+                            ion_type = "y"
+                        elif ion_name.startswith("b"):
+                            ion_type = "b"
+                        elif ion_name.startswith("a"):
+                            ion_type = "a"
+                        elif ion_name.startswith("c"):
+                            ion_type = "c"
+                        elif ion_name.startswith("x"):
+                            ion_type = "x"
+                        elif ion_name.startswith("z"):
+                            ion_type = "z"
                         else:
-                            ion_type = 'unknown'
+                            ion_type = "unknown"
 
                         annotations.append((peak_idx, ion_name, ion_type))
                 break
@@ -257,8 +258,8 @@ def create_annotated_spectrum_plot(
     charge: int,
     precursor_mz: float,
     tolerance_da: float = 0.5,
-    peak_annotations: Optional[List[Tuple[int, str, str]]] = None,
-    annotate: bool = True
+    peak_annotations: Optional[list[tuple[int, str, str]]] = None,
+    annotate: bool = True,
 ) -> go.Figure:
     """Create an annotated spectrum plot using Plotly.
 
@@ -287,57 +288,57 @@ def create_annotated_spectrum_plot(
         x_stems.extend([mz, mz, None])
         y_stems.extend([0, intensity, None])
 
-    fig.add_trace(go.Scatter(
-        x=x_stems,
-        y=y_stems,
-        mode='lines',
-        line=dict(color='gray', width=1),
-        name='Experimental',
-        hoverinfo='skip',
-        opacity=0.6
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=x_stems,
+            y=y_stems,
+            mode="lines",
+            line={"color": "gray", "width": 1},
+            name="Experimental",
+            hoverinfo="skip",
+            opacity=0.6,
+        )
+    )
 
     # Add hover points for experimental peaks
-    fig.add_trace(go.Scatter(
-        x=exp_mz,
-        y=exp_int_norm,
-        mode='markers',
-        marker=dict(color='gray', size=2),
-        showlegend=False,
-        hovertemplate='m/z: %{x:.4f}<br>Intensity: %{y:.1f}%<extra></extra>'
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=exp_mz,
+            y=exp_int_norm,
+            mode="markers",
+            marker={"color": "gray", "size": 2},
+            showlegend=False,
+            hovertemplate="m/z: %{x:.4f}<br>Intensity: %{y:.1f}%<extra></extra>",
+        )
+    )
 
     # Add annotations if enabled
     if annotate:
-        matched_peaks = {'b': [], 'y': [], 'a': [], 'c': [], 'x': [], 'z': [], 'unknown': []}
+        matched_peaks = {"b": [], "y": [], "a": [], "c": [], "x": [], "z": [], "unknown": []}
 
         if peak_annotations:
             # Use provided peak annotations from SpectrumAnnotator
             for peak_idx, ion_name, ion_type in peak_annotations:
                 if peak_idx < len(exp_mz):
-                    matched_peaks[ion_type].append({
-                        'mz': exp_mz[peak_idx],
-                        'intensity': exp_int_norm[peak_idx],
-                        'label': ion_name
-                    })
+                    matched_peaks[ion_type].append(
+                        {"mz": exp_mz[peak_idx], "intensity": exp_int_norm[peak_idx], "label": ion_name}
+                    )
         else:
             # Fall back to generating theoretical spectrum for annotation
             try:
                 seq = AASequence.fromString(sequence_str)
                 theo_ions = generate_theoretical_spectrum(seq, charge)
 
-                for ion_type, ions in [('b', theo_ions['b']), ('y', theo_ions['y'])]:
+                for ion_type, ions in [("b", theo_ions["b"]), ("y", theo_ions["y"])]:
                     for theo_mz, ion_name in ions:
                         # Find closest experimental peak
                         if len(exp_mz) > 0:
                             diffs = np.abs(exp_mz - theo_mz)
                             min_idx = np.argmin(diffs)
                             if diffs[min_idx] <= tolerance_da:
-                                matched_peaks[ion_type].append({
-                                    'mz': exp_mz[min_idx],
-                                    'intensity': exp_int_norm[min_idx],
-                                    'label': ion_name
-                                })
+                                matched_peaks[ion_type].append(
+                                    {"mz": exp_mz[min_idx], "intensity": exp_int_norm[min_idx], "label": ion_name}
+                                )
             except Exception:
                 pass
 
@@ -351,63 +352,58 @@ def create_annotated_spectrum_plot(
             x_ions = []
             y_ions = []
             for peak in peaks:
-                x_ions.extend([peak['mz'], peak['mz'], None])
-                y_ions.extend([0, peak['intensity'], None])
+                x_ions.extend([peak["mz"], peak["mz"], None])
+                y_ions.extend([0, peak["intensity"], None])
 
-            fig.add_trace(go.Scatter(
-                x=x_ions,
-                y=y_ions,
-                mode='lines',
-                line=dict(color=color, width=2),
-                name=f'{ion_type}-ions',
-                hoverinfo='skip'
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=x_ions,
+                    y=y_ions,
+                    mode="lines",
+                    line={"color": color, "width": 2},
+                    name=f"{ion_type}-ions",
+                    hoverinfo="skip",
+                )
+            )
 
             # Add hover points and annotations for matched peaks
             for peak in peaks:
-                fig.add_trace(go.Scatter(
-                    x=[peak['mz']],
-                    y=[peak['intensity']],
-                    mode='markers',
-                    marker=dict(color=color, size=4),
-                    showlegend=False,
-                    hovertemplate=f"{peak['label']}<br>m/z: {peak['mz']:.4f}<br>Intensity: {peak['intensity']:.1f}%<extra></extra>"
-                ))
+                fig.add_trace(
+                    go.Scatter(
+                        x=[peak["mz"]],
+                        y=[peak["intensity"]],
+                        mode="markers",
+                        marker={"color": color, "size": 4},
+                        showlegend=False,
+                        hovertemplate=f"{peak['label']}<br>m/z: {peak['mz']:.4f}<br>Intensity: {peak['intensity']:.1f}%<extra></extra>",
+                    )
+                )
 
                 # Add text annotation
                 fig.add_annotation(
-                    x=peak['mz'],
-                    y=peak['intensity'] + 3,
-                    text=peak['label'],
+                    x=peak["mz"],
+                    y=peak["intensity"] + 3,
+                    text=peak["label"],
                     showarrow=False,
-                    font=dict(size=9, color=color),
-                    textangle=-45
+                    font={"size": 9, "color": color},
+                    textangle=-45,
                 )
 
     # Add precursor marker
-    fig.add_vline(x=precursor_mz, line_dash="dash", line_color="orange",
-                  annotation_text=f"Precursor ({precursor_mz:.2f})")
+    fig.add_vline(
+        x=precursor_mz, line_dash="dash", line_color="orange", annotation_text=f"Precursor ({precursor_mz:.2f})"
+    )
 
     # Update layout
     fig.update_layout(
-        title=dict(
-            text=f"MS2 Spectrum: {sequence_str} (z={charge}+)",
-            font=dict(size=14)
-        ),
+        title={"text": f"MS2 Spectrum: {sequence_str} (z={charge}+)", "font": {"size": 14}},
         xaxis_title="m/z",
         yaxis_title="Relative Intensity (%)",
         template="plotly_dark",
         height=400,
-        margin=dict(l=60, r=20, t=50, b=50),
+        margin={"l": 60, "r": 20, "t": 50, "b": 50},
         showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(size=10)
-        )
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1, "font": {"size": 10}},
     )
 
     fig.update_xaxes(range=[0, max(exp_mz) * 1.05] if len(exp_mz) > 0 else [0, 2000], showgrid=False)
@@ -417,15 +413,14 @@ def create_annotated_spectrum_plot(
 
 
 # Available colormaps for peak map visualization
-import matplotlib
 COLORMAPS = {
-    'jet': matplotlib.colormaps['jet'],
-    'hot': matplotlib.colormaps['hot'],
-    'fire': cc.fire,
-    'viridis': matplotlib.colormaps['viridis'],
-    'plasma': matplotlib.colormaps['plasma'],
-    'inferno': matplotlib.colormaps['inferno'],
-    'magma': matplotlib.colormaps['magma'],
+    "jet": matplotlib.colormaps["jet"],
+    "hot": matplotlib.colormaps["hot"],
+    "fire": cc.fire,
+    "viridis": matplotlib.colormaps["viridis"],
+    "plasma": matplotlib.colormaps["plasma"],
+    "inferno": matplotlib.colormaps["inferno"],
+    "magma": matplotlib.colormaps["magma"],
 }
 
 
@@ -433,20 +428,20 @@ def get_colormap_background(colormap_name: str) -> str:
     """Get the lowest color from a colormap as a hex string for background."""
     cmap = COLORMAPS.get(colormap_name)
     if cmap is None:
-        return 'black'
+        return "black"
 
     # Check if it's a matplotlib colormap (has __call__ method)
-    if hasattr(cmap, '__call__'):
+    if callable(cmap):
         # Matplotlib colormap - get color at 0
         rgba = cmap(0)
         # Convert to hex
         r, g, b = int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255)
-        return f'#{r:02x}{g:02x}{b:02x}'
+        return f"#{r:02x}{g:02x}{b:02x}"
     elif isinstance(cmap, list) and len(cmap) > 0:
         # Colorcet list - first element is the lowest color
         return cmap[0]
     else:
-        return 'black'
+        return "black"
 
 
 class MzMLViewer:
@@ -518,10 +513,10 @@ class MzMLViewer:
         self.show_bounding_boxes = False  # Disabled by default for faster rendering
         self.swap_axes = True  # Default: m/z on x-axis, RT on y-axis; when False: RT on x, m/z on y
         self.show_spectrum_marker = True  # Show spectrum marker (crosshair) on 2D peakmap
-        self.show_convex_hulls = False    # Disabled by default for faster rendering
+        self.show_convex_hulls = False  # Disabled by default for faster rendering
         self.show_ids = True
         self.show_id_sequences = False  # Show peptide sequences on 2D peakmap (off by default)
-        self.colormap = 'jet'  # Default colormap
+        self.colormap = "jet"  # Default colormap
         self.rt_in_minutes = False  # Display RT in minutes instead of seconds
         self.spectrum_intensity_percent = True  # Display spectrum intensity as percentage (vs absolute)
         self.annotate_peaks = True  # Annotate peaks in spectrum view when ID is selected
@@ -586,7 +581,6 @@ class MzMLViewer:
         self.hover_id_idx = None  # ID being hovered in table
         self._hover_update_pending = False  # Debounce hover updates
 
-
         # 3D visualization
         self.show_3d_view = False
         self.plot_3d = None  # Plotly 3D plot element
@@ -598,9 +592,9 @@ class MzMLViewer:
 
         # NiceGUI 3.x: Event callbacks for state management
         # These allow UI components to subscribe to state changes
-        self._on_data_loaded_callbacks: List[callable] = []
-        self._on_view_changed_callbacks: List[callable] = []
-        self._on_selection_changed_callbacks: List[callable] = []
+        self._on_data_loaded_callbacks: list[callable] = []
+        self._on_view_changed_callbacks: list[callable] = []
+        self._on_selection_changed_callbacks: list[callable] = []
 
     def on_data_loaded(self, callback: callable) -> None:
         """Register a callback for when data is loaded (mzML, features, or IDs)."""
@@ -719,7 +713,7 @@ class MzMLViewer:
             if self.exp is None:
                 return False
 
-            n_spectra = self.exp.size()
+            self.exp.size()
             total_peaks = sum(spec.size() for spec in self.exp)
 
             if total_peaks == 0:
@@ -748,7 +742,7 @@ class MzMLViewer:
             # Also compute TIC (overall and per-CV)
             tic_rts = []
             tic_intensities = []
-            faims_tic_data = {cv: {'rt': [], 'int': []} for cv in self.faims_cvs} if self.has_faims else {}
+            faims_tic_data = {cv: {"rt": [], "int": []} for cv in self.faims_cvs} if self.has_faims else {}
 
             if progress_callback:
                 progress_callback("Extracting peaks...", 0.1)
@@ -774,11 +768,11 @@ class MzMLViewer:
                 cv = self._get_cv_from_spectrum(spec) if self.has_faims else None
 
                 if n > 0:
-                    rts[idx:idx+n] = rt
-                    mzs[idx:idx+n] = mz_array
-                    intensities[idx:idx+n] = int_array
+                    rts[idx : idx + n] = rt
+                    mzs[idx : idx + n] = mz_array
+                    intensities[idx : idx + n] = int_array
                     if self.has_faims and cv is not None:
-                        cvs[idx:idx+n] = cv
+                        cvs[idx : idx + n] = cv
                     idx += n
 
                     # TIC: sum of all intensities for this spectrum
@@ -788,8 +782,8 @@ class MzMLViewer:
 
                     # Per-CV TIC
                     if self.has_faims and cv is not None:
-                        faims_tic_data[cv]['rt'].append(rt)
-                        faims_tic_data[cv]['int'].append(tic_sum)
+                        faims_tic_data[cv]["rt"].append(rt)
+                        faims_tic_data[cv]["int"].append(tic_sum)
 
             rts = rts[:idx]
             mzs = mzs[:idx]
@@ -808,8 +802,8 @@ class MzMLViewer:
             self.faims_tic = {}
             for cv in self.faims_cvs:
                 self.faims_tic[cv] = (
-                    np.array(faims_tic_data[cv]['rt'], dtype=np.float32),
-                    np.array(faims_tic_data[cv]['int'], dtype=np.float32)
+                    np.array(faims_tic_data[cv]["rt"], dtype=np.float32),
+                    np.array(faims_tic_data[cv]["int"], dtype=np.float32),
                 )
 
             if progress_callback:
@@ -822,14 +816,10 @@ class MzMLViewer:
                 progress_callback("Creating DataFrame...", 0.85)
 
             # Create main DataFrame
-            self.df = pd.DataFrame({
-                'rt': rts,
-                'mz': mzs,
-                'intensity': intensities
-            })
+            self.df = pd.DataFrame({"rt": rts, "mz": mzs, "intensity": intensities})
             if self.has_faims:
-                self.df['cv'] = cvs
-            self.df['log_intensity'] = np.log1p(self.df['intensity'])
+                self.df["cv"] = cvs
+            self.df["log_intensity"] = np.log1p(self.df["intensity"])
 
             if progress_callback:
                 progress_callback("Finalizing...", 0.95)
@@ -838,13 +828,13 @@ class MzMLViewer:
             self.faims_data = {}
             if self.has_faims:
                 for cv in self.faims_cvs:
-                    cv_df = self.df[self.df['cv'] == cv].copy()
+                    cv_df = self.df[self.df["cv"] == cv].copy()
                     self.faims_data[cv] = cv_df
 
-            self.rt_min = float(self.df['rt'].min())
-            self.rt_max = float(self.df['rt'].max())
-            self.mz_min = float(self.df['mz'].min())
-            self.mz_max = float(self.df['mz'].max())
+            self.rt_min = float(self.df["rt"].min())
+            self.rt_max = float(self.df["rt"].max())
+            self.mz_min = float(self.df["mz"].min())
+            self.mz_max = float(self.df["mz"].max())
 
             self.view_rt_min = self.rt_min
             self.view_rt_max = self.rt_max
@@ -912,7 +902,7 @@ class MzMLViewer:
             # Also compute TIC (overall and per-CV)
             tic_rts = []
             tic_intensities = []
-            faims_tic_data = {cv: {'rt': [], 'int': []} for cv in self.faims_cvs} if self.has_faims else {}
+            faims_tic_data = {cv: {"rt": [], "int": []} for cv in self.faims_cvs} if self.has_faims else {}
 
             idx = 0
             spec_count = 0
@@ -932,11 +922,11 @@ class MzMLViewer:
                 cv = self._get_cv_from_spectrum(spec) if self.has_faims else None
 
                 if n > 0:
-                    rts[idx:idx+n] = rt
-                    mzs[idx:idx+n] = mz_array
-                    intensities[idx:idx+n] = int_array
+                    rts[idx : idx + n] = rt
+                    mzs[idx : idx + n] = mz_array
+                    intensities[idx : idx + n] = int_array
                     if self.has_faims and cv is not None:
-                        cvs[idx:idx+n] = cv
+                        cvs[idx : idx + n] = cv
                     idx += n
 
                     # TIC: sum of all intensities for this spectrum
@@ -946,10 +936,10 @@ class MzMLViewer:
 
                     # Per-CV TIC
                     if self.has_faims and cv is not None:
-                        faims_tic_data[cv]['rt'].append(rt)
-                        faims_tic_data[cv]['int'].append(tic_sum)
+                        faims_tic_data[cv]["rt"].append(rt)
+                        faims_tic_data[cv]["int"].append(tic_sum)
 
-            self.update_loading_progress(f"Building data structures...")
+            self.update_loading_progress("Building data structures...")
 
             rts = rts[:idx]
             mzs = mzs[:idx]
@@ -965,11 +955,11 @@ class MzMLViewer:
             self.faims_tic = {}
             for cv in self.faims_cvs:
                 self.faims_tic[cv] = (
-                    np.array(faims_tic_data[cv]['rt'], dtype=np.float32),
-                    np.array(faims_tic_data[cv]['int'], dtype=np.float32)
+                    np.array(faims_tic_data[cv]["rt"], dtype=np.float32),
+                    np.array(faims_tic_data[cv]["int"], dtype=np.float32),
                 )
 
-            self.update_loading_progress(f"Extracting spectrum metadata...")
+            self.update_loading_progress("Extracting spectrum metadata...")
 
             # Extract spectrum metadata for browser
             self.spectrum_data = self._extract_spectrum_data()
@@ -977,28 +967,24 @@ class MzMLViewer:
             self.update_loading_progress(f"Creating DataFrame ({idx:,} peaks)...")
 
             # Create main DataFrame
-            self.df = pd.DataFrame({
-                'rt': rts,
-                'mz': mzs,
-                'intensity': intensities
-            })
+            self.df = pd.DataFrame({"rt": rts, "mz": mzs, "intensity": intensities})
             if self.has_faims:
-                self.df['cv'] = cvs
-            self.df['log_intensity'] = np.log1p(self.df['intensity'])
+                self.df["cv"] = cvs
+            self.df["log_intensity"] = np.log1p(self.df["intensity"])
 
-            self.update_loading_progress(f"Finalizing...")
+            self.update_loading_progress("Finalizing...")
 
             # Create per-CV DataFrames for FAIMS view
             self.faims_data = {}
             if self.has_faims:
                 for cv in self.faims_cvs:
-                    cv_df = self.df[self.df['cv'] == cv].copy()
+                    cv_df = self.df[self.df["cv"] == cv].copy()
                     self.faims_data[cv] = cv_df
 
-            self.rt_min = float(self.df['rt'].min())
-            self.rt_max = float(self.df['rt'].max())
-            self.mz_min = float(self.df['mz'].min())
-            self.mz_max = float(self.df['mz'].max())
+            self.rt_min = float(self.df["rt"].min())
+            self.rt_max = float(self.df["rt"].max())
+            self.mz_min = float(self.df["mz"].min())
+            self.mz_max = float(self.df["mz"].max())
 
             self.view_rt_min = self.rt_min
             self.view_rt_max = self.rt_max
@@ -1008,11 +994,7 @@ class MzMLViewer:
             self.current_file = filepath
 
             # Build info text
-            info_text = (
-                f"Loaded: {Path(filepath).name} | "
-                f"Spectra: {self.exp.size():,} | "
-                f"Peaks: {len(self.df):,}"
-            )
+            info_text = f"Loaded: {Path(filepath).name} | Spectra: {self.exp.size():,} | Peaks: {len(self.df):,}"
             if self.has_faims:
                 info_text += f" | FAIMS: {len(self.faims_cvs)} CVs"
 
@@ -1030,7 +1012,7 @@ class MzMLViewer:
                 if self.faims_toggle:
                     self.faims_toggle.set_visibility(True)
                 # Create FAIMS image elements
-                if hasattr(self, '_create_faims_images') and self._create_faims_images:
+                if hasattr(self, "_create_faims_images") and self._create_faims_images:
                     self._create_faims_images()
             else:
                 if self.faims_info_label:
@@ -1051,7 +1033,7 @@ class MzMLViewer:
 
             self.set_loading(False)
             # NiceGUI 3.x: Emit event for state management
-            self._emit_data_loaded('mzml')
+            self._emit_data_loaded("mzml")
             return True
 
         except Exception as e:
@@ -1061,7 +1043,7 @@ class MzMLViewer:
             ui.notify(f"Error loading file: {e}", type="negative")
             return False
 
-    def _extract_feature_data(self) -> List[Dict[str, Any]]:
+    def _extract_feature_data(self) -> list[dict[str, Any]]:
         """Extract feature data for table display."""
         if self.feature_map is None:
             return []
@@ -1088,20 +1070,22 @@ class MzMLViewer:
                     rt_width = max(rt_coords) - min(rt_coords)
                     mz_width = max(mz_coords) - min(mz_coords)
 
-            data.append({
-                'idx': idx,
-                'rt': round(rt, 2),
-                'mz': round(mz, 4),
-                'intensity': f"{intensity:.2e}",
-                'charge': charge if charge != 0 else '-',
-                'quality': round(quality, 3) if quality > 0 else '-',
-                'rt_width': round(rt_width, 2) if rt_width > 0 else '-',
-                'mz_width': round(mz_width, 4) if mz_width > 0 else '-',
-            })
+            data.append(
+                {
+                    "idx": idx,
+                    "rt": round(rt, 2),
+                    "mz": round(mz, 4),
+                    "intensity": f"{intensity:.2e}",
+                    "charge": charge if charge != 0 else "-",
+                    "quality": round(quality, 3) if quality > 0 else "-",
+                    "rt_width": round(rt_width, 2) if rt_width > 0 else "-",
+                    "mz_width": round(mz_width, 4) if mz_width > 0 else "-",
+                }
+            )
 
         return data
 
-    def _extract_spectrum_data(self) -> List[Dict[str, Any]]:
+    def _extract_spectrum_data(self) -> list[dict[str, Any]]:
         """Extract spectrum metadata for the unified spectrum table.
 
         Includes fields for ID info (sequence, score) which are populated
@@ -1127,31 +1111,33 @@ class MzMLViewer:
             mz_max = float(mz_array.max()) if len(mz_array) > 0 else 0
 
             # Get precursor info for MS2+
-            precursor_mz = '-'
-            precursor_charge = '-'
+            precursor_mz = "-"
+            precursor_charge = "-"
             if ms_level > 1:
                 precursors = spec.getPrecursors()
                 if precursors:
                     precursor_mz = round(precursors[0].getMZ(), 4)
                     charge = precursors[0].getCharge()
-                    precursor_charge = charge if charge > 0 else '-'
+                    precursor_charge = charge if charge > 0 else "-"
 
-            data.append({
-                'idx': idx,
-                'rt': round(rt, 2),
-                'ms_level': ms_level,
-                'n_peaks': n_peaks,
-                'tic': f"{tic:.2e}",
-                'bpi': f"{bpi:.2e}",
-                'mz_range': f"{mz_min:.1f}-{mz_max:.1f}" if n_peaks > 0 else '-',
-                'precursor_mz': precursor_mz,
-                'precursor_z': precursor_charge,
-                # ID fields - populated by _link_ids_to_spectra()
-                'sequence': '-',
-                'full_sequence': '',
-                'score': '-',
-                'id_idx': None,  # Index into peptide_ids list
-            })
+            data.append(
+                {
+                    "idx": idx,
+                    "rt": round(rt, 2),
+                    "ms_level": ms_level,
+                    "n_peaks": n_peaks,
+                    "tic": f"{tic:.2e}",
+                    "bpi": f"{bpi:.2e}",
+                    "mz_range": f"{mz_min:.1f}-{mz_max:.1f}" if n_peaks > 0 else "-",
+                    "precursor_mz": precursor_mz,
+                    "precursor_z": precursor_charge,
+                    # ID fields - populated by _link_ids_to_spectra()
+                    "sequence": "-",
+                    "full_sequence": "",
+                    "score": "-",
+                    "id_idx": None,  # Index into peptide_ids list
+                }
+            )
 
         return data
 
@@ -1181,20 +1167,20 @@ class MzMLViewer:
                 for key in hit_keys:
                     meta_keys_set.add(f"hit:{key.decode() if isinstance(key, bytes) else key}")
 
-        self.id_meta_keys = sorted(list(meta_keys_set))
+        self.id_meta_keys = sorted(meta_keys_set)
 
         # Build lookup of spectrum indices by approximate RT for faster matching
         for spec_row in self.spectrum_data:
             # Clear any existing ID info
-            spec_row['sequence'] = '-'
-            spec_row['full_sequence'] = ''
-            spec_row['score'] = '-'
-            spec_row['id_idx'] = None
-            spec_row['hit_rank'] = '-'
-            spec_row['all_hits'] = []  # Store all hits for this spectrum
+            spec_row["sequence"] = "-"
+            spec_row["full_sequence"] = ""
+            spec_row["score"] = "-"
+            spec_row["id_idx"] = None
+            spec_row["hit_rank"] = "-"
+            spec_row["all_hits"] = []  # Store all hits for this spectrum
             # Initialize meta value fields
             for meta_key in self.id_meta_keys:
-                spec_row[meta_key] = '-'
+                spec_row[meta_key] = "-"
 
         # For each ID, find matching spectrum
         for id_idx, pep_id in enumerate(self.peptide_ids):
@@ -1238,57 +1224,59 @@ class MzMLViewer:
                         value = round(value, 4)
                     hit_meta_values[f"hit:{key_str}"] = value
 
-                all_hits_data.append({
-                    'sequence': sequence[:25] + "..." if len(sequence) > 25 else sequence,
-                    'full_sequence': sequence,
-                    'score': round(score, 4) if score != 0 else '-',
-                    'charge': charge,
-                    'hit_rank': hit_idx + 1,  # 1-indexed position in list
-                    'id_idx': id_idx,
-                    'hit_idx': hit_idx,  # 0-indexed for internal use
-                    'meta_values': hit_meta_values,
-                })
+                all_hits_data.append(
+                    {
+                        "sequence": sequence[:25] + "..." if len(sequence) > 25 else sequence,
+                        "full_sequence": sequence,
+                        "score": round(score, 4) if score != 0 else "-",
+                        "charge": charge,
+                        "hit_rank": hit_idx + 1,  # 1-indexed position in list
+                        "id_idx": id_idx,
+                        "hit_idx": hit_idx,  # 0-indexed for internal use
+                        "meta_values": hit_meta_values,
+                    }
+                )
 
             # Find best matching MS2 spectrum
             best_spec_idx = None
-            best_rt_diff = float('inf')
+            best_rt_diff = float("inf")
 
             for spec_row in self.spectrum_data:
-                if spec_row['ms_level'] != 2:
+                if spec_row["ms_level"] != 2:
                     continue
 
-                spec_rt = spec_row['rt']
-                spec_prec_mz = spec_row['precursor_mz']
+                spec_rt = spec_row["rt"]
+                spec_prec_mz = spec_row["precursor_mz"]
 
-                if spec_prec_mz == '-':
+                if spec_prec_mz == "-":
                     continue
 
                 if abs(spec_rt - id_rt) <= rt_tolerance and abs(spec_prec_mz - id_mz) <= mz_tolerance:
                     rt_diff = abs(spec_rt - id_rt)
                     if rt_diff < best_rt_diff:
                         best_rt_diff = rt_diff
-                        best_spec_idx = spec_row['idx']
+                        best_spec_idx = spec_row["idx"]
 
             # Update spectrum row with ID info
             if best_spec_idx is not None:
                 for spec_row in self.spectrum_data:
-                    if spec_row['idx'] == best_spec_idx:
+                    if spec_row["idx"] == best_spec_idx:
                         # Only update if this is a better match (closer RT) or no existing match
-                        if spec_row['id_idx'] is None or best_rt_diff < spec_row.get('_rt_diff', float('inf')):
+                        if spec_row["id_idx"] is None or best_rt_diff < spec_row.get("_rt_diff", float("inf")):
                             best_hit_data = all_hits_data[0]
-                            spec_row['sequence'] = best_hit_data['sequence']
-                            spec_row['full_sequence'] = best_hit_data['full_sequence']
-                            spec_row['score'] = best_hit_data['score']
-                            spec_row['id_idx'] = id_idx
-                            spec_row['hit_rank'] = 1
-                            spec_row['all_hits'] = all_hits_data
-                            spec_row['_rt_diff'] = best_rt_diff
+                            spec_row["sequence"] = best_hit_data["sequence"]
+                            spec_row["full_sequence"] = best_hit_data["full_sequence"]
+                            spec_row["score"] = best_hit_data["score"]
+                            spec_row["id_idx"] = id_idx
+                            spec_row["hit_rank"] = 1
+                            spec_row["all_hits"] = all_hits_data
+                            spec_row["_rt_diff"] = best_rt_diff
                             # Add meta values from best hit
-                            for key, value in best_hit_data['meta_values'].items():
+                            for key, value in best_hit_data["meta_values"].items():
                                 spec_row[key] = value
                             # Also update charge from ID if precursor charge is missing
-                            if spec_row['precursor_z'] == '-' and best_hit_data['charge'] > 0:
-                                spec_row['precursor_z'] = best_hit_data['charge']
+                            if spec_row["precursor_z"] == "-" and best_hit_data["charge"] > 0:
+                                spec_row["precursor_z"] = best_hit_data["charge"]
                         break
 
     def show_spectrum_in_browser(self, spectrum_idx: int):
@@ -1330,15 +1318,18 @@ class MzMLViewer:
 
                 # Create annotated spectrum plot
                 fig = create_annotated_spectrum_plot(
-                    mz_array, int_array,
-                    sequence_str, charge, prec_mz,
+                    mz_array,
+                    int_array,
+                    sequence_str,
+                    charge,
+                    prec_mz,
                     peak_annotations=peak_annotations,
-                    annotate=self.annotate_peaks
+                    annotate=self.annotate_peaks,
                 )
 
                 # Update title to include spectrum index
                 title = f"Spectrum #{spectrum_idx} | {sequence_str} (z={charge}+) | RT={rt:.2f}s"
-                fig.update_layout(title=dict(text=title, font=dict(size=14)), height=350)
+                fig.update_layout(title={"text": title, "font": {"size": 14}}, height=350)
 
                 # Update info label with ID info
                 if self.spectrum_browser_info is not None:
@@ -1357,19 +1348,19 @@ class MzMLViewer:
             if self.spectrum_intensity_percent:
                 int_display = (int_array / max_int) * 100
                 y_title = "Relative Intensity (%)"
-                hover_fmt = 'm/z: %{x:.4f}<br>Intensity: %{y:.1f}%<extra></extra>'
+                hover_fmt = "m/z: %{x:.4f}<br>Intensity: %{y:.1f}%<extra></extra>"
                 y_range = [0, 105]
             else:
                 int_display = int_array
                 y_title = "Intensity"
-                hover_fmt = 'm/z: %{x:.4f}<br>Intensity: %{y:.2e}<extra></extra>'
+                hover_fmt = "m/z: %{x:.4f}<br>Intensity: %{y:.2e}<extra></extra>"
                 y_range = [0, max_int * 1.05]
 
             # Create figure
             fig = go.Figure()
 
             # Color based on MS level
-            color = '#00d4ff' if ms_level == 1 else '#ff6b6b'
+            color = "#00d4ff" if ms_level == 1 else "#ff6b6b"
 
             # Add spectrum as vertical lines (stem plot) - doesn't get thicker when zooming
             # Create x, y arrays for stem plot: each peak is [mz, mz, None], [0, intensity, None]
@@ -1379,22 +1370,20 @@ class MzMLViewer:
                 x_stems.extend([mz, mz, None])
                 y_stems.extend([0, intensity, None])
 
-            fig.add_trace(go.Scatter(
-                x=x_stems,
-                y=y_stems,
-                mode='lines',
-                line=dict(color=color, width=1),
-                hoverinfo='skip'
-            ))
+            fig.add_trace(
+                go.Scatter(x=x_stems, y=y_stems, mode="lines", line={"color": color, "width": 1}, hoverinfo="skip")
+            )
 
             # Add hover points at peak tops
-            fig.add_trace(go.Scatter(
-                x=mz_array,
-                y=int_display,
-                mode='markers',
-                marker=dict(color=color, size=3),
-                hovertemplate=hover_fmt
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=mz_array,
+                    y=int_display,
+                    mode="markers",
+                    marker={"color": color, "size": 3},
+                    hovertemplate=hover_fmt,
+                )
+            )
 
             # Title with spectrum info
             title = f"Spectrum #{spectrum_idx} | MS{ms_level} | RT={rt:.2f}s | {len(mz_array):,} peaks"
@@ -1404,20 +1393,21 @@ class MzMLViewer:
                 precursors = spec.getPrecursors()
                 if precursors:
                     prec_mz = precursors[0].getMZ()
-                    fig.add_vline(x=prec_mz, line_dash="dash", line_color="orange",
-                                  annotation_text=f"Precursor ({prec_mz:.2f})")
+                    fig.add_vline(
+                        x=prec_mz, line_dash="dash", line_color="orange", annotation_text=f"Precursor ({prec_mz:.2f})"
+                    )
                     title += f" | Precursor: {prec_mz:.4f}"
 
             fig.update_layout(
-                title=dict(text=title, font=dict(size=14)),
+                title={"text": title, "font": {"size": 14}},
                 xaxis_title="m/z",
                 yaxis_title=y_title,
                 template="plotly_dark",
                 height=350,
-                margin=dict(l=60, r=20, t=50, b=50),
+                margin={"l": 60, "r": 20, "t": 50, "b": 50},
                 showlegend=False,
-                xaxis=dict(showgrid=False),
-                yaxis=dict(showgrid=False)
+                xaxis={"showgrid": False},
+                yaxis={"showgrid": False},
             )
 
             fig.update_yaxes(range=y_range)
@@ -1441,7 +1431,7 @@ class MzMLViewer:
         # Update spectrum table selection
         if self.spectrum_table is not None:
             # Find the row data for this spectrum
-            matching_rows = [row for row in self.spectrum_data if row['idx'] == spectrum_idx]
+            matching_rows = [row for row in self.spectrum_data if row["idx"] == spectrum_idx]
             if matching_rows:
                 self.spectrum_table.selected = matching_rows
 
@@ -1453,7 +1443,7 @@ class MzMLViewer:
             self.update_plot()
 
         # NiceGUI 3.x: Emit selection change event
-        self._emit_selection_changed('spectrum', spectrum_idx)
+        self._emit_selection_changed("spectrum", spectrum_idx)
 
     def navigate_spectrum(self, direction: int):
         """Navigate to prev/next spectrum."""
@@ -1507,7 +1497,7 @@ class MzMLViewer:
     def load_featuremap(self, filepath: str) -> bool:
         """Load featureXML file (with UI updates)."""
         try:
-            self.set_loading(True, f"Loading features...")
+            self.set_loading(True, "Loading features...")
             if self.status_label:
                 self.status_label.set_text(f"Loading features from {Path(filepath).name}...")
             ui.notify(f"Loading {filepath}...", type="info")
@@ -1531,7 +1521,7 @@ class MzMLViewer:
 
             self.set_loading(False)
             # NiceGUI 3.x: Emit event for state management
-            self._emit_data_loaded('features')
+            self._emit_data_loaded("features")
             return True
 
         except Exception as e:
@@ -1553,7 +1543,7 @@ class MzMLViewer:
             self.feature_table.rows = []
         ui.notify("Features cleared", type="info")
 
-    def _extract_id_data(self) -> List[Dict[str, Any]]:
+    def _extract_id_data(self) -> list[dict[str, Any]]:
         """Extract peptide ID data for table display."""
         if not self.peptide_ids:
             return []
@@ -1575,15 +1565,17 @@ class MzMLViewer:
                 score = 0
                 charge = 0
 
-            data.append({
-                'idx': idx,
-                'rt': round(rt, 2),
-                'mz': round(mz, 4),
-                'sequence': sequence[:30] + "..." if len(sequence) > 30 else sequence,
-                'full_sequence': sequence,
-                'charge': charge if charge != 0 else '-',
-                'score': round(score, 4) if score != 0 else '-',
-            })
+            data.append(
+                {
+                    "idx": idx,
+                    "rt": round(rt, 2),
+                    "mz": round(mz, 4),
+                    "sequence": sequence[:30] + "..." if len(sequence) > 30 else sequence,
+                    "full_sequence": sequence,
+                    "charge": charge if charge != 0 else "-",
+                    "score": round(score, 4) if score != 0 else "-",
+                }
+            )
             idx += 1
 
         return data
@@ -1607,7 +1599,7 @@ class MzMLViewer:
     def load_idxml(self, filepath: str) -> bool:
         """Load idXML file with peptide identifications (with UI updates)."""
         try:
-            self.set_loading(True, f"Loading identifications...")
+            self.set_loading(True, "Loading identifications...")
             if self.status_label:
                 self.status_label.set_text(f"Loading IDs from {Path(filepath).name}...")
             ui.notify(f"Loading {filepath}...", type="info")
@@ -1624,7 +1616,7 @@ class MzMLViewer:
             self._link_ids_to_spectra()
 
             n_ids = len(self.peptide_ids)
-            n_linked = sum(1 for s in self.spectrum_data if s.get('id_idx') is not None)
+            n_linked = sum(1 for s in self.spectrum_data if s.get("id_idx") is not None)
             if self.id_info_label:
                 self.id_info_label.set_text(f"IDs: {n_ids:,} ({n_linked} linked)")
             if self.status_label:
@@ -1637,7 +1629,7 @@ class MzMLViewer:
 
             self.set_loading(False)
             # NiceGUI 3.x: Emit event for state management
-            self._emit_data_loaded('ids')
+            self._emit_data_loaded("ids")
             return True
 
         except Exception as e:
@@ -1656,10 +1648,10 @@ class MzMLViewer:
         self.selected_id_idx = None
         # Clear ID info from unified spectrum data
         for spec_row in self.spectrum_data:
-            spec_row['sequence'] = '-'
-            spec_row['full_sequence'] = ''
-            spec_row['score'] = '-'
-            spec_row['id_idx'] = None
+            spec_row["sequence"] = "-"
+            spec_row["full_sequence"] = ""
+            spec_row["score"] = "-"
+            spec_row["id_idx"] = None
         if self.id_info_label:
             self.id_info_label.set_text("IDs: None")
         # Update unified spectrum table
@@ -1667,13 +1659,15 @@ class MzMLViewer:
             self.spectrum_table.rows = self.spectrum_data
         ui.notify("Identifications cleared", type="info")
 
-    def find_ms2_spectrum(self, rt: float, precursor_mz: float, rt_tolerance: float = 5.0, mz_tolerance: float = 0.5) -> Optional[MSSpectrum]:
+    def find_ms2_spectrum(
+        self, rt: float, precursor_mz: float, rt_tolerance: float = 5.0, mz_tolerance: float = 0.5
+    ) -> Optional[MSSpectrum]:
         """Find the MS2 spectrum matching the given RT and precursor m/z."""
         if self.exp is None:
             return None
 
         best_spec = None
-        best_rt_diff = float('inf')
+        best_rt_diff = float("inf")
 
         for spec in self.exp:
             if spec.getMSLevel() != 2:
@@ -1695,7 +1689,9 @@ class MzMLViewer:
 
         return best_spec
 
-    def find_matching_id_for_spectrum(self, spectrum_idx: int, rt_tolerance: float = 5.0, mz_tolerance: float = 0.5) -> Optional[int]:
+    def find_matching_id_for_spectrum(
+        self, spectrum_idx: int, rt_tolerance: float = 5.0, mz_tolerance: float = 0.5
+    ) -> Optional[int]:
         """Find peptide ID matching the given spectrum. Returns ID index or None."""
         if self.exp is None or not self.peptide_ids:
             return None
@@ -1718,7 +1714,7 @@ class MzMLViewer:
 
         # Find best matching ID
         best_id_idx = None
-        best_rt_diff = float('inf')
+        best_rt_diff = float("inf")
 
         for i, pep_id in enumerate(self.peptide_ids):
             id_rt = pep_id.getRT()
@@ -1745,7 +1741,7 @@ class MzMLViewer:
         id_mz = pep_id.getMZ()
 
         best_spec_idx = None
-        best_rt_diff = float('inf')
+        best_rt_diff = float("inf")
 
         for i in range(self.exp.size()):
             spec = self.exp[i]
@@ -1772,11 +1768,7 @@ class MzMLViewer:
         fig = go.Figure()
 
         if self.tic_rt is None or len(self.tic_rt) == 0:
-            fig.update_layout(
-                title="TIC - No data loaded",
-                template="plotly_dark",
-                height=200
-            )
+            fig.update_layout(title="TIC - No data loaded", template="plotly_dark", height=200)
             return fig
 
         # Convert RT to display units
@@ -1785,16 +1777,18 @@ class MzMLViewer:
         display_rt = [rt / rt_divisor for rt in self.tic_rt]
 
         # Create TIC trace
-        fig.add_trace(go.Scatter(
-            x=display_rt,
-            y=self.tic_intensity,
-            mode='lines',
-            name='TIC',
-            line=dict(color='#00d4ff', width=1),
-            fill='tozeroy',
-            fillcolor='rgba(0, 212, 255, 0.2)',
-            hovertemplate=f'RT: %{{x:.2f}}{rt_unit}<br>Intensity: %{{y:.2e}}<extra></extra>'
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=display_rt,
+                y=self.tic_intensity,
+                mode="lines",
+                name="TIC",
+                line={"color": "#00d4ff", "width": 1},
+                fill="tozeroy",
+                fillcolor="rgba(0, 212, 255, 0.2)",
+                hovertemplate=f"RT: %{{x:.2f}}{rt_unit}<br>Intensity: %{{y:.2e}}<extra></extra>",
+            )
+        )
 
         # Add view range indicator
         if self.view_rt_min is not None and self.view_rt_max is not None:
@@ -1804,7 +1798,7 @@ class MzMLViewer:
                 fillcolor="rgba(255, 255, 0, 0.15)",
                 layer="below",
                 line_width=1,
-                line_color="rgba(255, 255, 0, 0.5)"
+                line_color="rgba(255, 255, 0, 0.5)",
             )
 
         # Add vertical marker for selected spectrum
@@ -1812,7 +1806,7 @@ class MzMLViewer:
             spec = self.exp[self.selected_spectrum_idx]
             selected_rt = spec.getRT() / rt_divisor
             ms_level = spec.getMSLevel()
-            marker_color = '#00d4ff' if ms_level == 1 else '#ff6b6b'
+            marker_color = "#00d4ff" if ms_level == 1 else "#ff6b6b"
             fig.add_vline(
                 x=selected_rt,
                 line_dash="solid",
@@ -1821,18 +1815,18 @@ class MzMLViewer:
                 annotation_text=f"#{self.selected_spectrum_idx}",
                 annotation_position="top",
                 annotation_font_color=marker_color,
-                annotation_font_size=10
+                annotation_font_size=10,
             )
 
         fig.update_layout(
-            title=dict(text="Total Ion Chromatogram (TIC) - Click to select spectrum", font=dict(size=14)),
+            title={"text": "Total Ion Chromatogram (TIC) - Click to select spectrum", "font": {"size": 14}},
             xaxis_title=f"RT ({rt_unit})",
             yaxis_title="Total Intensity",
             template="plotly_dark",
             height=200,
-            margin=dict(l=60, r=20, t=40, b=40),
+            margin={"l": 60, "r": 20, "t": 40, "b": 40},
             showlegend=False,
-            hovermode='x unified'
+            hovermode="x unified",
         )
 
         # Set x-axis range to match data
@@ -1856,7 +1850,7 @@ class MzMLViewer:
             return None
 
         best_idx = None
-        best_rt_diff = float('inf')
+        best_rt_diff = float("inf")
 
         for i in range(self.exp.size()):
             spec = self.exp[i]
@@ -1935,7 +1929,7 @@ class MzMLViewer:
         ui.notify(f"Zoomed to feature {feature_idx + 1}", type="info")
 
         # NiceGUI 3.x: Emit selection change event
-        self._emit_selection_changed('feature', feature_idx)
+        self._emit_selection_changed("feature", feature_idx)
 
     def zoom_to_id(self, id_idx: int, padding: float = 0.3):
         """Zoom to a specific peptide identification and show annotated spectrum."""
@@ -1964,14 +1958,14 @@ class MzMLViewer:
         if spec_idx is not None:
             self.show_spectrum_in_browser(spec_idx)
         else:
-            ui.notify(f"No matching MS2 spectrum found for this ID", type="warning")
+            ui.notify("No matching MS2 spectrum found for this ID", type="warning")
 
         ui.notify(f"Zoomed to ID {id_idx + 1}", type="info")
 
         # NiceGUI 3.x: Emit selection change event
-        self._emit_selection_changed('id', id_idx)
+        self._emit_selection_changed("id", id_idx)
 
-    def _data_to_plot_pixel(self, rt: float, mz: float) -> Tuple[int, int]:
+    def _data_to_plot_pixel(self, rt: float, mz: float) -> tuple[int, int]:
         """Convert RT/m/z to pixel coordinates (handles swapped axes)."""
         rt_range = self.view_rt_max - self.view_rt_min
         mz_range = self.view_mz_max - self.view_mz_min
@@ -1992,22 +1986,24 @@ class MzMLViewer:
 
     def _is_in_view(self, rt: float, mz: float) -> bool:
         """Check if point is in current view."""
-        return (self.view_rt_min <= rt <= self.view_rt_max and
-                self.view_mz_min <= mz <= self.view_mz_max)
+        return self.view_rt_min <= rt <= self.view_rt_max and self.view_mz_min <= mz <= self.view_mz_max
 
-    def _feature_intersects_view(self, rt_min: float, rt_max: float,
-                                  mz_min: float, mz_max: float) -> bool:
+    def _feature_intersects_view(self, rt_min: float, rt_max: float, mz_min: float, mz_max: float) -> bool:
         """Check if feature intersects current view."""
-        return not (rt_max < self.view_rt_min or rt_min > self.view_rt_max or
-                    mz_max < self.view_mz_min or mz_min > self.view_mz_max)
+        return not (
+            rt_max < self.view_rt_min
+            or rt_min > self.view_rt_max
+            or mz_max < self.view_mz_min
+            or mz_min > self.view_mz_max
+        )
 
     def _draw_features_on_plot(self, img: Image.Image) -> Image.Image:
         """Draw feature overlays."""
         if self.feature_map is None or self.feature_map.size() == 0:
             return img
 
-        img = img.convert('RGBA')
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        img = img.convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         features_drawn = 0
@@ -2017,7 +2013,7 @@ class MzMLViewer:
             if features_drawn >= max_features:
                 break
 
-            is_selected = (idx == self.selected_feature_idx)
+            is_selected = idx == self.selected_feature_idx
             rt = feature.getRT()
             mz = feature.getMZ()
 
@@ -2040,8 +2036,7 @@ class MzMLViewer:
                 feat_rt_min, feat_rt_max = rt - 1, rt + 1
                 feat_mz_min, feat_mz_max = mz - 0.5, mz + 0.5
 
-            if not self._feature_intersects_view(feat_rt_min, feat_rt_max,
-                                                  feat_mz_min, feat_mz_max):
+            if not self._feature_intersects_view(feat_rt_min, feat_rt_max, feat_mz_min, feat_mz_max):
                 continue
 
             features_drawn += 1
@@ -2058,19 +2053,22 @@ class MzMLViewer:
                         pixel_points = [self._data_to_plot_pixel(p[0], p[1]) for p in points]
                         pixel_points.append(pixel_points[0])
                         fill_alpha = 100 if is_selected else 50
-                        draw.polygon(pixel_points, outline=hull_color,
-                                    fill=(*hull_color[:3], fill_alpha))
+                        draw.polygon(pixel_points, outline=hull_color, fill=(*hull_color[:3], fill_alpha))
 
             if self.show_bounding_boxes:
                 top_left = self._data_to_plot_pixel(feat_rt_min, feat_mz_max)
                 bottom_right = self._data_to_plot_pixel(feat_rt_max, feat_mz_min)
-                draw.rectangle([top_left, bottom_right], outline=bbox_color, width=line_width)
+                # Ensure x1 <= x2 and y1 <= y2 for PIL rectangle
+                x1, y1 = top_left
+                x2, y2 = bottom_right
+                x1, x2 = min(x1, x2), max(x1, x2)
+                y1, y2 = min(y1, y2), max(y1, y2)
+                draw.rectangle([x1, y1, x2, y2], outline=bbox_color, width=line_width)
 
             if self.show_centroids:
                 cx, cy = self._data_to_plot_pixel(rt, mz)
                 r = 5 if is_selected else 3
-                draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=centroid_color,
-                            outline=(255, 255, 255, 255))
+                draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=centroid_color, outline=(255, 255, 255, 255))
 
         img = Image.alpha_composite(img, overlay)
         return img
@@ -2100,8 +2098,8 @@ class MzMLViewer:
         if not rt_in_view and not mz_in_view:
             return img
 
-        img = img.convert('RGBA')
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        img = img.convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         # Colors: cyan for MS1, red for MS2
@@ -2110,7 +2108,7 @@ class MzMLViewer:
 
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
-        except:
+        except OSError:
             font = ImageFont.load_default()
 
         # Calculate pixel position based on axis orientation
@@ -2173,8 +2171,8 @@ class MzMLViewer:
         if not self.peptide_ids or not self.show_ids:
             return img
 
-        img = img.convert('RGBA')
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        img = img.convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         # Load font for sequence labels
@@ -2195,7 +2193,7 @@ class MzMLViewer:
             if not self._is_in_view(rt, mz):
                 continue
 
-            is_selected = (idx == self.selected_id_idx)
+            is_selected = idx == self.selected_id_idx
             color = self.id_selected_color if is_selected else self.id_color
 
             cx, cy = self._data_to_plot_pixel(rt, mz)
@@ -2228,7 +2226,7 @@ class MzMLViewer:
                     # Background rectangle
                     draw.rectangle(
                         [(text_x - 1, text_y - 1), (text_x + text_width + 1, text_y + text_height + 1)],
-                        fill=(0, 0, 0, 180)
+                        fill=(0, 0, 0, 180),
                     )
                     draw.text((text_x, text_y), seq, fill=(255, 255, 255, 255), font=font)
 
@@ -2240,8 +2238,8 @@ class MzMLViewer:
         if self.hover_feature_idx is None and self.hover_id_idx is None:
             return img
 
-        img = img.convert('RGBA')
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        img = img.convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         hover_color = (100, 255, 200, 180)  # Bright cyan-green for hover
@@ -2342,11 +2340,11 @@ class MzMLViewer:
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
             title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
-        except:
+        except OSError:
             try:
                 font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf", 12)
                 title_font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf", 14)
-            except:
+            except OSError:
                 font = ImageFont.load_default()
                 title_font = font
 
@@ -2355,8 +2353,7 @@ class MzMLViewer:
         plot_top = self.margin_top
         plot_bottom = self.margin_top + self.plot_height
 
-        draw.rectangle([plot_left, plot_top, plot_right, plot_bottom],
-                       outline=self.axis_color, width=1)
+        draw.rectangle([plot_left, plot_top, plot_right, plot_bottom], outline=self.axis_color, width=1)
 
         # X-axis and Y-axis drawing depends on swap_axes setting
         if self.swap_axes:
@@ -2378,8 +2375,12 @@ class MzMLViewer:
             x_title = "m/z"
             bbox = draw.textbbox((0, 0), x_title, font=title_font)
             title_width = bbox[2] - bbox[0]
-            draw.text((plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
-                      x_title, fill=self.label_color, font=title_font)
+            draw.text(
+                (plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+                x_title,
+                fill=self.label_color,
+                font=title_font,
+            )
 
             # Y-axis: RT
             if self.rt_in_minutes:
@@ -2403,7 +2404,9 @@ class MzMLViewer:
                     bbox = draw.textbbox((0, 0), label, font=font)
                     label_width = bbox[2] - bbox[0]
                     label_height = bbox[3] - bbox[1]
-                    draw.text((plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font)
+                    draw.text(
+                        (plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font
+                    )
 
             y_title = "RT (min)" if self.rt_in_minutes else "RT (s)"
         else:
@@ -2432,8 +2435,12 @@ class MzMLViewer:
             x_title = "RT (min)" if self.rt_in_minutes else "RT (s)"
             bbox = draw.textbbox((0, 0), x_title, font=title_font)
             title_width = bbox[2] - bbox[0]
-            draw.text((plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
-                      x_title, fill=self.label_color, font=title_font)
+            draw.text(
+                (plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+                x_title,
+                fill=self.label_color,
+                font=title_font,
+            )
 
             # Y-axis: m/z (default)
             mz_ticks = calculate_nice_ticks(self.view_mz_min, self.view_mz_max, num_ticks=8)
@@ -2448,10 +2455,12 @@ class MzMLViewer:
                     bbox = draw.textbbox((0, 0), label, font=font)
                     label_width = bbox[2] - bbox[0]
                     label_height = bbox[3] - bbox[1]
-                    draw.text((plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font)
+                    draw.text(
+                        (plot_left - label_width - 10, y - label_height // 2), label, fill=self.label_color, font=font
+                    )
 
             y_title = "m/z"
-        txt_img = Image.new('RGBA', (100, 30), (0, 0, 0, 0))
+        txt_img = Image.new("RGBA", (100, 30), (0, 0, 0, 0))
         txt_draw = ImageDraw.Draw(txt_img)
         txt_draw.text((0, 0), y_title, fill=self.label_color, font=title_font)
         txt_img = txt_img.rotate(90, expand=True)
@@ -2468,10 +2477,10 @@ class MzMLViewer:
             return ""
 
         mask = (
-            (self.df['rt'] >= self.view_rt_min) &
-            (self.df['rt'] <= self.view_rt_max) &
-            (self.df['mz'] >= self.view_mz_min) &
-            (self.df['mz'] <= self.view_mz_max)
+            (self.df["rt"] >= self.view_rt_min)
+            & (self.df["rt"] <= self.view_rt_max)
+            & (self.df["mz"] >= self.view_mz_min)
+            & (self.df["mz"] <= self.view_mz_max)
         )
         view_df = self.df[mask]
 
@@ -2484,18 +2493,18 @@ class MzMLViewer:
                 plot_width=self.plot_width,
                 plot_height=self.plot_height,
                 x_range=(self.view_mz_min, self.view_mz_max),
-                y_range=(self.view_rt_min, self.view_rt_max)
+                y_range=(self.view_rt_min, self.view_rt_max),
             )
-            agg = ds_canvas.points(view_df, 'mz', 'rt', ds.max('log_intensity'))
+            agg = ds_canvas.points(view_df, "mz", "rt", ds.max("log_intensity"))
         else:
             ds_canvas = ds.Canvas(
                 plot_width=self.plot_width,
                 plot_height=self.plot_height,
                 x_range=(self.view_rt_min, self.view_rt_max),
-                y_range=(self.view_mz_min, self.view_mz_max)
+                y_range=(self.view_mz_min, self.view_mz_max),
             )
-            agg = ds_canvas.points(view_df, 'rt', 'mz', ds.max('log_intensity'))
-        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
+            agg = ds_canvas.points(view_df, "rt", "mz", ds.max("log_intensity"))
+        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how="linear")
         # Use dynspread to make points more visible (dynamically adjusts based on density)
         img = tf.dynspread(img, threshold=0.5, max_px=3)
         img = tf.set_background(img, get_colormap_background(self.colormap))
@@ -2514,17 +2523,17 @@ class MzMLViewer:
         # Draw hover highlights (last so they appear on top)
         plot_img = self._draw_hover_overlay(plot_img)
 
-        canvas = Image.new('RGBA', (self.canvas_width, self.canvas_height), (20, 20, 25, 255))
-        plot_img_rgba = plot_img.convert('RGBA')
+        canvas = Image.new("RGBA", (self.canvas_width, self.canvas_height), (20, 20, 25, 255))
+        plot_img_rgba = plot_img.convert("RGBA")
         canvas.paste(plot_img_rgba, (self.margin_left, self.margin_top))
 
         canvas = self._draw_axes(canvas)
 
         buffer = io.BytesIO()
-        canvas.save(buffer, format='PNG')
+        canvas.save(buffer, format="PNG")
         buffer.seek(0)
 
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     def render_faims_image(self, cv: float) -> str:
         """Render a single FAIMS CV peak map using datashader."""
@@ -2534,10 +2543,10 @@ class MzMLViewer:
         cv_df = self.faims_data[cv]
 
         mask = (
-            (cv_df['rt'] >= self.view_rt_min) &
-            (cv_df['rt'] <= self.view_rt_max) &
-            (cv_df['mz'] >= self.view_mz_min) &
-            (cv_df['mz'] <= self.view_mz_max)
+            (cv_df["rt"] >= self.view_rt_min)
+            & (cv_df["rt"] <= self.view_rt_max)
+            & (cv_df["mz"] >= self.view_mz_min)
+            & (cv_df["mz"] <= self.view_mz_max)
         )
         view_df = cv_df[mask]
 
@@ -2552,11 +2561,11 @@ class MzMLViewer:
             plot_width=faims_plot_width,
             plot_height=faims_plot_height,
             x_range=(self.view_rt_min, self.view_rt_max),
-            y_range=(self.view_mz_min, self.view_mz_max)
+            y_range=(self.view_mz_min, self.view_mz_max),
         )
 
-        agg = ds_canvas.points(view_df, 'rt', 'mz', ds.max('log_intensity'))
-        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
+        agg = ds_canvas.points(view_df, "rt", "mz", ds.max("log_intensity"))
+        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how="linear")
         img = tf.dynspread(img, threshold=0.5, max_px=3)
         img = tf.set_background(img, get_colormap_background(self.colormap))
 
@@ -2565,7 +2574,7 @@ class MzMLViewer:
         # Add CV label at top
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
-        except:
+        except OSError:
             font = ImageFont.load_default()
 
         draw = ImageDraw.Draw(plot_img)
@@ -2576,14 +2585,13 @@ class MzMLViewer:
         draw.text((10, 7), label, fill=(255, 255, 255, 255), font=font)
 
         # Add border
-        draw.rectangle([(0, 0), (faims_plot_width - 1, faims_plot_height - 1)],
-                       outline=(100, 100, 100, 255), width=1)
+        draw.rectangle([(0, 0), (faims_plot_width - 1, faims_plot_height - 1)], outline=(100, 100, 100, 255), width=1)
 
         buffer = io.BytesIO()
-        plot_img.save(buffer, format='PNG')
+        plot_img.save(buffer, format="PNG")
         buffer.seek(0)
 
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     def update_faims_plots(self):
         """Update all FAIMS CV peak map panels."""
@@ -2644,19 +2652,25 @@ class MzMLViewer:
         # Create minimap canvas - swap axes to match main view
         if self.swap_axes:
             # m/z on x-axis, RT on y-axis
-            cvs = ds.Canvas(plot_width=self.minimap_width, plot_height=self.minimap_height,
-                            x_range=(self.mz_min, self.mz_max),
-                            y_range=(self.rt_min, self.rt_max))
-            agg = cvs.points(self.df, 'mz', 'rt', agg=ds.max('log_intensity'))
+            cvs = ds.Canvas(
+                plot_width=self.minimap_width,
+                plot_height=self.minimap_height,
+                x_range=(self.mz_min, self.mz_max),
+                y_range=(self.rt_min, self.rt_max),
+            )
+            agg = cvs.points(self.df, "mz", "rt", agg=ds.max("log_intensity"))
         else:
             # RT on x-axis, m/z on y-axis (traditional)
-            cvs = ds.Canvas(plot_width=self.minimap_width, plot_height=self.minimap_height,
-                            x_range=(self.rt_min, self.rt_max),
-                            y_range=(self.mz_min, self.mz_max))
-            agg = cvs.points(self.df, 'rt', 'mz', agg=ds.max('log_intensity'))
+            cvs = ds.Canvas(
+                plot_width=self.minimap_width,
+                plot_height=self.minimap_height,
+                x_range=(self.rt_min, self.rt_max),
+                y_range=(self.mz_min, self.mz_max),
+            )
+            agg = cvs.points(self.df, "rt", "mz", agg=ds.max("log_intensity"))
 
         # Apply color map with linear scaling (matches main view)
-        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how='linear')
+        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how="linear")
         img = tf.dynspread(img, threshold=0.5, max_px=2)
         img = tf.set_background(img, get_colormap_background(self.colormap))
 
@@ -2664,9 +2678,12 @@ class MzMLViewer:
         plot_img = img.to_pil()
 
         # Draw view rectangle
-        if (self.view_rt_min is not None and self.view_rt_max is not None and
-            self.view_mz_min is not None and self.view_mz_max is not None):
-
+        if (
+            self.view_rt_min is not None
+            and self.view_rt_max is not None
+            and self.view_mz_min is not None
+            and self.view_mz_max is not None
+        ):
             draw = ImageDraw.Draw(plot_img)
 
             # Convert data coords to pixel coords
@@ -2687,15 +2704,18 @@ class MzMLViewer:
                     y1 = int((self.mz_max - self.view_mz_max) / mz_range * self.minimap_height)
                     y2 = int((self.mz_max - self.view_mz_min) / mz_range * self.minimap_height)
 
-                # Clamp to minimap bounds
+                # Clamp to minimap bounds and ensure x1 <= x2, y1 <= y2
                 x1, x2 = max(0, x1), min(self.minimap_width - 1, x2)
                 y1, y2 = max(0, y1), min(self.minimap_height - 1, y2)
+                x1, x2 = min(x1, x2), max(x1, x2)
+                y1, y2 = min(y1, y2), max(y1, y2)
 
                 # Draw two concentric rectangles with complementary colors for visibility
                 # Outer rectangle (blue)
-                draw.rectangle([x1-1, y1-1, x2+1, y2+1], outline=(0, 100, 255, 255), width=2)
-                # Inner rectangle (yellow)
-                draw.rectangle([x1+1, y1+1, x2-1, y2-1], outline=(255, 255, 0, 255), width=2)
+                draw.rectangle([x1 - 1, y1 - 1, x2 + 1, y2 + 1], outline=(0, 100, 255, 255), width=2)
+                # Inner rectangle (yellow) - only draw if there's enough space
+                if x2 - x1 >= 2 and y2 - y1 >= 2:
+                    draw.rectangle([x1 + 1, y1 + 1, x2 - 1, y2 - 1], outline=(255, 255, 0, 255), width=2)
 
         # Draw spectrum marker at selected spectrum RT
         # When swap_axes=True: RT on y-axis, draw HORIZONTAL lines
@@ -2719,23 +2739,23 @@ class MzMLViewer:
                     # RT is on y-axis - draw horizontal lines
                     y = int((self.rt_max - rt) / rt_range * self.minimap_height)
                     y = max(0, min(self.minimap_height - 1, y))
-                    draw.line([(0, y-2), (self.minimap_width, y-2)], fill=(0, 0, 0, 200), width=1)
-                    draw.line([(0, y-1), (self.minimap_width, y-1)], fill=color, width=1)
-                    draw.line([(0, y+1), (self.minimap_width, y+1)], fill=color, width=1)
-                    draw.line([(0, y+2), (self.minimap_width, y+2)], fill=(0, 0, 0, 200), width=1)
+                    draw.line([(0, y - 2), (self.minimap_width, y - 2)], fill=(0, 0, 0, 200), width=1)
+                    draw.line([(0, y - 1), (self.minimap_width, y - 1)], fill=color, width=1)
+                    draw.line([(0, y + 1), (self.minimap_width, y + 1)], fill=color, width=1)
+                    draw.line([(0, y + 2), (self.minimap_width, y + 2)], fill=(0, 0, 0, 200), width=1)
                 else:
                     # RT is on x-axis - draw vertical lines
                     x = int((rt - self.rt_min) / rt_range * self.minimap_width)
                     x = max(0, min(self.minimap_width - 1, x))
-                    draw.line([(x-2, 0), (x-2, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
-                    draw.line([(x-1, 0), (x-1, self.minimap_height)], fill=color, width=1)
-                    draw.line([(x+1, 0), (x+1, self.minimap_height)], fill=color, width=1)
-                    draw.line([(x+2, 0), (x+2, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
+                    draw.line([(x - 2, 0), (x - 2, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
+                    draw.line([(x - 1, 0), (x - 1, self.minimap_height)], fill=color, width=1)
+                    draw.line([(x + 1, 0), (x + 1, self.minimap_height)], fill=color, width=1)
+                    draw.line([(x + 2, 0), (x + 2, self.minimap_height)], fill=(0, 0, 0, 200), width=1)
 
         # Convert to base64
         buffer = io.BytesIO()
-        plot_img.save(buffer, format='PNG')
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+        plot_img.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     def update_minimap(self):
         """Update the minimap display."""
@@ -2772,17 +2792,17 @@ class MzMLViewer:
 
         # Clamp to data bounds
         if new_rt_min < self.rt_min:
-            new_rt_max += (self.rt_min - new_rt_min)
+            new_rt_max += self.rt_min - new_rt_min
             new_rt_min = self.rt_min
         if new_rt_max > self.rt_max:
-            new_rt_min -= (new_rt_max - self.rt_max)
+            new_rt_min -= new_rt_max - self.rt_max
             new_rt_max = self.rt_max
 
         if new_mz_min < self.mz_min:
-            new_mz_max += (self.mz_min - new_mz_min)
+            new_mz_max += self.mz_min - new_mz_min
             new_mz_min = self.mz_min
         if new_mz_max > self.mz_max:
-            new_mz_min -= (new_mz_max - self.mz_max)
+            new_mz_min -= new_mz_max - self.mz_max
             new_mz_max = self.mz_max
 
         # Final clamp
@@ -2820,7 +2840,7 @@ class MzMLViewer:
 
         # Limit history size
         if len(self.zoom_history) > self.max_zoom_history:
-            self.zoom_history = self.zoom_history[-self.max_zoom_history:]
+            self.zoom_history = self.zoom_history[-self.max_zoom_history :]
 
     def go_to_zoom_history(self, index: int):
         """Jump to a specific point in zoom history."""
@@ -2831,7 +2851,7 @@ class MzMLViewer:
         self.view_rt_min, self.view_rt_max, self.view_mz_min, self.view_mz_max, _ = state
 
         # Truncate history to this point (forward history is lost)
-        self.zoom_history = self.zoom_history[:index + 1]
+        self.zoom_history = self.zoom_history[: index + 1]
 
         self.update_plot()
 
@@ -2846,13 +2866,13 @@ class MzMLViewer:
 
         # Build breadcrumb string
         parts = []
-        for i, (_, _, _, _, label) in enumerate(self.zoom_history):
+        for _i, (_, _, _, _, label) in enumerate(self.zoom_history):
             parts.append(label)
 
         breadcrumb_text = " → ".join(parts)
         self.breadcrumb_label.set_text(breadcrumb_text)
 
-    def pixel_to_data_coords(self, pixel_x: int, pixel_y: int) -> Tuple[float, float]:
+    def pixel_to_data_coords(self, pixel_x: int, pixel_y: int) -> tuple[float, float]:
         """Convert pixel coordinates to RT/m/z data coordinates."""
         # Account for margins
         plot_x = pixel_x - self.margin_left
@@ -2901,28 +2921,28 @@ class MzMLViewer:
                 rt_range = self.view_rt_max - self.view_rt_min
                 mz_range = self.view_mz_max - self.view_mz_min
                 self.view_3d_status.set_text(
-                    f'Zoom in more for 3D (current: RT={rt_range:.0f}s, m/z={mz_range:.0f} | need: RT≤{self.rt_threshold_3d:.0f}s, m/z≤{self.mz_threshold_3d:.0f})'
+                    f"Zoom in more for 3D (current: RT={rt_range:.0f}s, m/z={mz_range:.0f} | need: RT≤{self.rt_threshold_3d:.0f}s, m/z≤{self.mz_threshold_3d:.0f})"
                 )
             return
 
         # Get peaks in current view
         mask = (
-            (self.df['rt'] >= self.view_rt_min) &
-            (self.df['rt'] <= self.view_rt_max) &
-            (self.df['mz'] >= self.view_mz_min) &
-            (self.df['mz'] <= self.view_mz_max)
+            (self.df["rt"] >= self.view_rt_min)
+            & (self.df["rt"] <= self.view_rt_max)
+            & (self.df["mz"] >= self.view_mz_min)
+            & (self.df["mz"] <= self.view_mz_max)
         )
         view_df = self.df[mask].copy()
 
         if len(view_df) == 0:
             if self.view_3d_status:
-                self.view_3d_status.set_text('No peaks in view')
+                self.view_3d_status.set_text("No peaks in view")
             return
 
         # Subsample if too many peaks
         num_peaks_total = len(view_df)
         if len(view_df) > self.max_3d_peaks:
-            view_df = view_df.nlargest(self.max_3d_peaks, 'intensity')
+            view_df = view_df.nlargest(self.max_3d_peaks, "intensity")
         num_peaks_shown = len(view_df)
 
         try:
@@ -2930,17 +2950,10 @@ class MzMLViewer:
             from pyopenms_viz._plotly.core import PLOTLYPeakMapPlot
 
             # Rename columns to match pyopenms-viz expectations
-            plot_df = view_df.rename(columns={'rt': 'RT', 'mz': 'mz', 'intensity': 'int'})
+            plot_df = view_df.rename(columns={"rt": "RT", "mz": "mz", "intensity": "int"})
 
             # Create 3D plot (no title - header shows info)
-            plot = PLOTLYPeakMapPlot(
-                plot_df,
-                x='RT',
-                y='mz',
-                z='int',
-                plot_3d=True,
-                title=''
-            )
+            plot = PLOTLYPeakMapPlot(plot_df, x="RT", y="mz", z="int", plot_3d=True, title="")
             plot.plot()
 
             # Get the plotly figure
@@ -2948,24 +2961,24 @@ class MzMLViewer:
 
             # Update layout for dark theme - maximize space usage
             fig.update_layout(
-                paper_bgcolor='#1a1a1f',
-                plot_bgcolor='#1a1a1f',
-                font=dict(color='#cccccc'),
-                scene=dict(
-                    xaxis=dict(title='RT (s)', backgroundcolor='#1a1a1f', gridcolor='#333333'),
-                    yaxis=dict(title='m/z', backgroundcolor='#1a1a1f', gridcolor='#333333'),
-                    zaxis=dict(title='Intensity', backgroundcolor='#1a1a1f', gridcolor='#333333'),
-                    bgcolor='#1a1a1f',
-                    aspectmode='manual',
-                    aspectratio=dict(x=1.5, y=1, z=0.8)
-                ),
-                margin=dict(l=0, r=0, t=0, b=0),
+                paper_bgcolor="#1a1a1f",
+                plot_bgcolor="#1a1a1f",
+                font={"color": "#cccccc"},
+                scene={
+                    "xaxis": {"title": "RT (s)", "backgroundcolor": "#1a1a1f", "gridcolor": "#333333"},
+                    "yaxis": {"title": "m/z", "backgroundcolor": "#1a1a1f", "gridcolor": "#333333"},
+                    "zaxis": {"title": "Intensity", "backgroundcolor": "#1a1a1f", "gridcolor": "#333333"},
+                    "bgcolor": "#1a1a1f",
+                    "aspectmode": "manual",
+                    "aspectratio": {"x": 1.5, "y": 1, "z": 0.8},
+                },
+                margin={"l": 0, "r": 0, "t": 0, "b": 0},
                 width=self.canvas_width,
                 height=500,
                 autosize=False,
                 showlegend=True,
-                legend=dict(x=0, y=1, bgcolor='rgba(26,26,31,0.8)'),
-                modebar=dict(orientation='v', bgcolor='rgba(0,0,0,0)')
+                legend={"x": 0, "y": 1, "bgcolor": "rgba(26,26,31,0.8)"},
+                modebar={"orientation": "v", "bgcolor": "rgba(0,0,0,0)"},
             )
 
             # Add feature markers if available
@@ -2978,13 +2991,15 @@ class MzMLViewer:
             # Update status
             if self.view_3d_status:
                 if num_peaks_shown < num_peaks_total:
-                    self.view_3d_status.set_text(f'Showing {num_peaks_shown:,} of {num_peaks_total:,} peaks (top intensity)')
+                    self.view_3d_status.set_text(
+                        f"Showing {num_peaks_shown:,} of {num_peaks_total:,} peaks (top intensity)"
+                    )
                 else:
-                    self.view_3d_status.set_text(f'Showing {num_peaks_shown:,} peaks')
+                    self.view_3d_status.set_text(f"Showing {num_peaks_shown:,} peaks")
 
         except Exception as e:
             if self.view_3d_status:
-                self.view_3d_status.set_text(f'3D plot error: {str(e)[:50]}')
+                self.view_3d_status.set_text(f"3D plot error: {str(e)[:50]}")
 
     def _add_features_to_3d_plot(self, fig):
         """Add feature bounding boxes to the 3D plotly figure."""
@@ -2998,13 +3013,12 @@ class MzMLViewer:
         box_y = []
         box_z = []
 
-        for i, feature in enumerate(self.feature_map):
+        for _i, feature in enumerate(self.feature_map):
             rt = feature.getRT()
             mz = feature.getMZ()
 
             # Check if feature is in current view
-            if not (self.view_rt_min <= rt <= self.view_rt_max and
-                    self.view_mz_min <= mz <= self.view_mz_max):
+            if not (self.view_rt_min <= rt <= self.view_rt_max and self.view_mz_min <= mz <= self.view_mz_max):
                 continue
 
             # Get RT and m/z bounds from convex hull
@@ -3048,19 +3062,21 @@ class MzMLViewer:
 
         if box_x:
             # Add all bounding boxes as a single trace
-            fig.add_trace(go.Scatter3d(
-                x=box_x,
-                y=box_y,
-                z=box_z,
-                mode='lines',
-                line=dict(color='#00ff66', width=3),
-                name='Features',
-                hoverinfo='skip'
-            ))
+            fig.add_trace(
+                go.Scatter3d(
+                    x=box_x,
+                    y=box_y,
+                    z=box_z,
+                    mode="lines",
+                    line={"color": "#00ff66", "width": 3},
+                    name="Features",
+                    hoverinfo="skip",
+                )
+            )
 
     # ==================== Search and Filter Methods ====================
 
-    def search_global(self, query: str) -> List[Dict[str, Any]]:
+    def search_global(self, query: str) -> list[dict[str, Any]]:
         """
         Search across spectra, IDs, and features.
         Returns list of results with type, description, and action.
@@ -3073,20 +3089,22 @@ class MzMLViewer:
         query_lower = query.lower()
 
         # Try to parse as spectrum number (e.g., "#123" or "123")
-        spec_match = query.replace('#', '').strip()
+        spec_match = query.replace("#", "").strip()
         if spec_match.isdigit():
             spec_idx = int(spec_match)
             if self.exp and 0 <= spec_idx < self.exp.size():
                 spec = self.exp[spec_idx]
-                results.append({
-                    'type': 'spectrum',
-                    'icon': 'analytics',
-                    'label': f"Spectrum #{spec_idx} (MS{spec.getMSLevel()}, RT={spec.getRT():.1f}s)",
-                    'action': lambda idx=spec_idx: self.show_spectrum_in_browser(idx)
-                })
+                results.append(
+                    {
+                        "type": "spectrum",
+                        "icon": "analytics",
+                        "label": f"Spectrum #{spec_idx} (MS{spec.getMSLevel()}, RT={spec.getRT():.1f}s)",
+                        "action": lambda idx=spec_idx: self.show_spectrum_in_browser(idx),
+                    }
+                )
 
         # Try to parse as m/z value (e.g., "500.25" or "mz:500.25")
-        mz_query = query_lower.replace('mz:', '').replace('m/z:', '').strip()
+        mz_query = query_lower.replace("mz:", "").replace("m/z:", "").strip()
         try:
             mz_val = float(mz_query)
             if 50 < mz_val < 10000:  # Reasonable m/z range
@@ -3097,12 +3115,14 @@ class MzMLViewer:
                         if spec.getMSLevel() > 1:
                             precs = spec.getPrecursors()
                             if precs and abs(precs[0].getMZ() - mz_val) < 0.5:
-                                results.append({
-                                    'type': 'spectrum',
-                                    'icon': 'analytics',
-                                    'label': f"MS2 #{i} precursor m/z={precs[0].getMZ():.4f}",
-                                    'action': lambda idx=i: self.show_spectrum_in_browser(idx)
-                                })
+                                results.append(
+                                    {
+                                        "type": "spectrum",
+                                        "icon": "analytics",
+                                        "label": f"MS2 #{i} precursor m/z={precs[0].getMZ():.4f}",
+                                        "action": lambda idx=i: self.show_spectrum_in_browser(idx),
+                                    }
+                                )
                                 if len(results) >= 10:
                                     break
                 # Find IDs near this m/z
@@ -3110,28 +3130,32 @@ class MzMLViewer:
                     if abs(pid.getMZ() - mz_val) < 0.5:
                         hits = pid.getHits()
                         seq = hits[0].getSequence().toString() if hits else "?"
-                        results.append({
-                            'type': 'id',
-                            'icon': 'biotech',
-                            'label': f"ID: {seq} (m/z={pid.getMZ():.4f})",
-                            'action': lambda idx=i: self.zoom_to_id(idx)
-                        })
+                        results.append(
+                            {
+                                "type": "id",
+                                "icon": "biotech",
+                                "label": f"ID: {seq} (m/z={pid.getMZ():.4f})",
+                                "action": lambda idx=i: self.zoom_to_id(idx),
+                            }
+                        )
                         if len(results) >= 15:
                             break
         except ValueError:
             pass
 
         # Try to parse as RT value (e.g., "rt:100" or "100s")
-        rt_query = query_lower.replace('rt:', '').replace('s', '').strip()
+        rt_query = query_lower.replace("rt:", "").replace("s", "").strip()
         try:
             rt_val = float(rt_query)
             if self.rt_min <= rt_val <= self.rt_max:
-                results.append({
-                    'type': 'navigate',
-                    'icon': 'place',
-                    'label': f"Go to RT={rt_val:.1f}s",
-                    'action': lambda rt=rt_val: self.go_to_rt(rt)
-                })
+                results.append(
+                    {
+                        "type": "navigate",
+                        "icon": "place",
+                        "label": f"Go to RT={rt_val:.1f}s",
+                        "action": lambda rt=rt_val: self.go_to_rt(rt),
+                    }
+                )
         except ValueError:
             pass
 
@@ -3142,12 +3166,14 @@ class MzMLViewer:
                 if hits:
                     seq = hits[0].getSequence().toString()
                     if query_lower in seq.lower():
-                        results.append({
-                            'type': 'id',
-                            'icon': 'biotech',
-                            'label': f"{seq} (RT={pid.getRT():.1f}s, m/z={pid.getMZ():.2f})",
-                            'action': lambda idx=i: self.zoom_to_id(idx)
-                        })
+                        results.append(
+                            {
+                                "type": "id",
+                                "icon": "biotech",
+                                "label": f"{seq} (RT={pid.getRT():.1f}s, m/z={pid.getMZ():.2f})",
+                                "action": lambda idx=i: self.zoom_to_id(idx),
+                            }
+                        )
                         if len(results) >= 20:
                             break
 
@@ -3177,7 +3203,9 @@ class MzMLViewer:
         self.push_zoom_history()
         self.update_plot()
 
-    def go_to_location(self, rt: Optional[float] = None, mz: Optional[float] = None, spectrum_idx: Optional[int] = None):
+    def go_to_location(
+        self, rt: Optional[float] = None, mz: Optional[float] = None, spectrum_idx: Optional[int] = None
+    ):
         """Navigate to a specific location."""
         if spectrum_idx is not None and self.exp and 0 <= spectrum_idx < self.exp.size():
             self.show_spectrum_in_browser(spectrum_idx)
@@ -3202,49 +3230,56 @@ class MzMLViewer:
         self.push_zoom_history()
         self.update_plot()
 
-    def filter_spectrum_data(self, ms_level: Optional[int] = None, rt_min: Optional[float] = None,
-                             rt_max: Optional[float] = None, min_peaks: Optional[int] = None,
-                             min_tic: Optional[float] = None) -> List[Dict]:
+    def filter_spectrum_data(
+        self,
+        ms_level: Optional[int] = None,
+        rt_min: Optional[float] = None,
+        rt_max: Optional[float] = None,
+        min_peaks: Optional[int] = None,
+        min_tic: Optional[float] = None,
+    ) -> list[dict]:
         """Filter spectrum data based on criteria."""
         filtered = []
         for row in self.spectrum_data:
-            if ms_level is not None and row['ms_level'] != ms_level:
+            if ms_level is not None and row["ms_level"] != ms_level:
                 continue
-            if rt_min is not None and row['rt'] < rt_min:
+            if rt_min is not None and row["rt"] < rt_min:
                 continue
-            if rt_max is not None and row['rt'] > rt_max:
+            if rt_max is not None and row["rt"] > rt_max:
                 continue
-            if min_peaks is not None and row['n_peaks'] < min_peaks:
+            if min_peaks is not None and row["n_peaks"] < min_peaks:
                 continue
-            if min_tic is not None and row['tic'] < min_tic:
+            if min_tic is not None and row["tic"] < min_tic:
                 continue
             filtered.append(row)
         return filtered
 
-    def filter_id_data(self, sequence_pattern: Optional[str] = None, min_score: Optional[float] = None,
-                       charge: Optional[int] = None) -> List[Dict]:
+    def filter_id_data(
+        self, sequence_pattern: Optional[str] = None, min_score: Optional[float] = None, charge: Optional[int] = None
+    ) -> list[dict]:
         """Filter ID data based on criteria."""
         filtered = []
         for row in self.id_data:
-            if sequence_pattern and sequence_pattern.lower() not in row['sequence'].lower():
+            if sequence_pattern and sequence_pattern.lower() not in row["sequence"].lower():
                 continue
-            if min_score is not None and row['score'] < min_score:
+            if min_score is not None and row["score"] < min_score:
                 continue
-            if charge is not None and row['charge'] != charge:
+            if charge is not None and row["charge"] != charge:
                 continue
             filtered.append(row)
         return filtered
 
-    def filter_feature_data(self, min_intensity: Optional[float] = None,
-                            min_quality: Optional[float] = None, charge: Optional[int] = None) -> List[Dict]:
+    def filter_feature_data(
+        self, min_intensity: Optional[float] = None, min_quality: Optional[float] = None, charge: Optional[int] = None
+    ) -> list[dict]:
         """Filter feature data based on criteria."""
         filtered = []
         for row in self.feature_data:
-            if min_intensity is not None and row['intensity'] < min_intensity:
+            if min_intensity is not None and row["intensity"] < min_intensity:
                 continue
-            if min_quality is not None and row['quality'] < min_quality:
+            if min_quality is not None and row["quality"] < min_quality:
                 continue
-            if charge is not None and row['charge'] != charge:
+            if charge is not None and row["charge"] != charge:
                 continue
             filtered.append(row)
         return filtered
@@ -3402,7 +3437,7 @@ class MzMLViewer:
         mz_per_pixel = (self.view_mz_max - self.view_mz_min) / self.plot_height
 
         rt_shift = -dx * rt_per_pixel  # Negative because dragging right should decrease RT view
-        mz_shift = dy * mz_per_pixel   # Positive because dragging down should decrease mz view
+        mz_shift = dy * mz_per_pixel  # Positive because dragging down should decrease mz view
 
         # Clamp shifts to stay within bounds
         if self.view_rt_min + rt_shift < self.rt_min:
@@ -3430,29 +3465,37 @@ def create_ui():
     dark.enable()
 
     # Top-right corner buttons (dark mode toggle + fullscreen)
-    with ui.element('div').classes('fixed top-2 right-2 z-50 flex gap-1'):
+    with ui.element("div").classes("fixed top-2 right-2 z-50 flex gap-1"):
+
         def toggle_dark_mode():
             dark.toggle()
-            dark_btn.props(f'icon={"light_mode" if dark.value else "dark_mode"}')
-            dark_btn._props['icon'] = 'light_mode' if dark.value else 'dark_mode'
+            dark_btn.props(f"icon={'light_mode' if dark.value else 'dark_mode'}")
+            dark_btn._props["icon"] = "light_mode" if dark.value else "dark_mode"
             dark_btn.update()
 
-        dark_btn = ui.button(icon='light_mode', on_click=toggle_dark_mode).props('flat round dense color=grey').tooltip('Toggle dark/light mode')
-        ui.button(icon='fullscreen', on_click=lambda: ui.run_javascript('''
+        dark_btn = (
+            ui.button(icon="light_mode", on_click=toggle_dark_mode)
+            .props("flat round dense color=grey")
+            .tooltip("Toggle dark/light mode")
+        )
+        ui.button(
+            icon="fullscreen",
+            on_click=lambda: ui.run_javascript("""
             if (!document.fullscreenElement) {
                 document.documentElement.requestFullscreen();
             } else {
                 document.exitFullscreen();
             }
-        ''')).props('flat round dense color=grey').tooltip('Toggle fullscreen (F11)')
+        """),
+        ).props("flat round dense color=grey").tooltip("Toggle fullscreen (F11)")
 
-    with ui.column().classes('w-full items-center p-4'):
-        ui.label('pyopenms-viewer').classes('text-3xl font-bold mb-2')
-        ui.label('Fast mzML viewer using NiceGUI + Datashader + pyOpenMS').classes('text-gray-400 mb-4')
+    with ui.column().classes("w-full items-center p-4"):
+        ui.label("pyopenms-viewer").classes("text-3xl font-bold mb-2")
+        ui.label("Fast mzML viewer using NiceGUI + Datashader + pyOpenMS").classes("text-gray-400 mb-4")
 
         # File loading section (local filesystem paths)
-        with ui.card().classes('w-full max-w-6xl mb-4'):
-            ui.label('Load Data').classes('text-xl font-semibold mb-2')
+        with ui.card().classes("w-full max-w-6xl mb-4"):
+            ui.label("Load Data").classes("text-xl font-semibold mb-2")
 
             async def handle_upload(e):
                 """Handle uploaded file - detect type and load appropriately."""
@@ -3468,7 +3511,7 @@ def create_ui():
                 await file.save(tmp_path)
 
                 try:
-                    if filename.endswith('.mzml'):
+                    if filename.endswith(".mzml"):
                         # Load mzML file (blocking pyOpenMS call runs in background thread)
                         success = await run.io_bound(viewer.load_mzml_sync, tmp_path)
                         if success:
@@ -3483,7 +3526,9 @@ def create_ui():
                                     viewer.tic_expansion.set_value(True)
                                 if viewer.spectrum_table_expansion is not None:
                                     viewer.spectrum_table_expansion.set_value(True)
-                            info_text = f"Loaded: {original_name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
+                            info_text = (
+                                f"Loaded: {original_name} | Spectra: {viewer.exp.size():,} | Peaks: {len(viewer.df):,}"
+                            )
                             if viewer.has_faims:
                                 info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
                             if viewer.info_label:
@@ -3501,7 +3546,7 @@ def create_ui():
                         else:
                             ui.notify(f"Failed to load {original_name}", type="negative")
 
-                    elif filename.endswith('.featurexml') or (filename.endswith('.xml') and 'feature' in filename):
+                    elif filename.endswith(".featurexml") or (filename.endswith(".xml") and "feature" in filename):
                         success = await run.io_bound(viewer.load_featuremap_sync, tmp_path)
                         if success:
                             viewer.update_plot()
@@ -3509,22 +3554,29 @@ def create_ui():
                                 viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
                             if viewer.feature_table is not None:
                                 viewer.feature_table.rows = viewer.feature_data
-                            ui.notify(f"Loaded {viewer.feature_map.size():,} features from {original_name}", type="positive")
+                            ui.notify(
+                                f"Loaded {viewer.feature_map.size():,} features from {original_name}", type="positive"
+                            )
 
-                    elif filename.endswith('.idxml') or (filename.endswith('.xml') and 'id' in filename):
+                    elif filename.endswith(".idxml") or (filename.endswith(".xml") and "id" in filename):
                         success = await run.io_bound(viewer.load_idxml_sync, tmp_path)
                         if success:
                             viewer.update_plot()
-                            n_linked = sum(1 for s in viewer.spectrum_data if s.get('id_idx') is not None)
+                            n_linked = sum(1 for s in viewer.spectrum_data if s.get("id_idx") is not None)
                             if viewer.id_info_label:
                                 viewer.id_info_label.set_text(f"IDs: {len(viewer.peptide_ids):,} ({n_linked} linked)")
                             # Update unified spectrum table with ID info
                             if viewer.spectrum_table is not None:
                                 viewer.spectrum_table.rows = viewer.spectrum_data
-                            ui.notify(f"Loaded {len(viewer.peptide_ids):,} IDs ({n_linked} linked) from {original_name}", type="positive")
+                            ui.notify(
+                                f"Loaded {len(viewer.peptide_ids):,} IDs ({n_linked} linked) from {original_name}",
+                                type="positive",
+                            )
 
                     else:
-                        ui.notify(f"Unknown file type: {original_name}. Supported: .mzML, .featureXML, .idXML", type="warning")
+                        ui.notify(
+                            f"Unknown file type: {original_name}. Supported: .mzML, .featureXML, .idXML", type="warning"
+                        )
 
                 except Exception as ex:
                     ui.notify(f"Error loading {original_name}: {ex}", type="negative")
@@ -3537,16 +3589,19 @@ def create_ui():
                     except Exception:
                         pass
 
-            with ui.row().classes('w-full items-center gap-4'):
+            with ui.row().classes("w-full items-center gap-4"):
                 ui.upload(
-                    label='Drop mzML, featureXML, or idXML files here',
+                    label="Drop mzML, featureXML, or idXML files here",
                     on_upload=handle_upload,
                     auto_upload=True,
                     multiple=True,
-                ).classes('flex-grow').props('accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat bordered')
+                ).classes("flex-grow").props(
+                    'accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat bordered'
+                )
 
                 # Clear buttons
-                with ui.column().classes('gap-1'):
+                with ui.column().classes("gap-1"):
+
                     def clear_features():
                         viewer.clear_features()
                         viewer.update_plot()
@@ -3555,25 +3610,28 @@ def create_ui():
                         viewer.clear_ids()
                         viewer.update_plot()
 
-                    ui.button('Clear Features', on_click=clear_features).props('dense outline color=grey').classes('text-xs')
-                    ui.button('Clear IDs', on_click=clear_ids).props('dense outline color=grey').classes('text-xs')
+                    ui.button("Clear Features", on_click=clear_features).props("dense outline color=grey").classes(
+                        "text-xs"
+                    )
+                    ui.button("Clear IDs", on_click=clear_ids).props("dense outline color=grey").classes("text-xs")
 
         # Info bar
-        with ui.row().classes('w-full justify-center gap-6 mb-2 flex-wrap'):
-            viewer.info_label = ui.label('No file loaded').classes('text-gray-400')
-            viewer.feature_info_label = ui.label('Features: None').classes('text-cyan-400')
-            viewer.id_info_label = ui.label('IDs: None').classes('text-orange-400')
-            viewer.faims_info_label = ui.label('').classes('text-purple-400')
+        with ui.row().classes("w-full justify-center gap-6 mb-2 flex-wrap"):
+            viewer.info_label = ui.label("No file loaded").classes("text-gray-400")
+            viewer.feature_info_label = ui.label("Features: None").classes("text-cyan-400")
+            viewer.id_info_label = ui.label("IDs: None").classes("text-orange-400")
+            viewer.faims_info_label = ui.label("").classes("text-purple-400")
             viewer.faims_info_label.set_visibility(False)
-            viewer.status_label = ui.label('Ready').classes('text-green-400')
+            viewer.status_label = ui.label("Ready").classes("text-green-400")
 
         # Range display
-        with ui.row().classes('w-full justify-center gap-8 mb-2'):
-            viewer.rt_range_label = ui.label('RT: -- - -- s').classes('text-blue-300')
-            viewer.mz_range_label = ui.label('m/z: -- - --').classes('text-blue-300')
+        with ui.row().classes("w-full justify-center gap-8 mb-2"):
+            viewer.rt_range_label = ui.label("RT: -- - -- s").classes("text-blue-300")
+            viewer.mz_range_label = ui.label("m/z: -- - --").classes("text-blue-300")
 
         # FAIMS toggle (hidden by default, shown when FAIMS data is detected)
-        with ui.row().classes('w-full justify-center gap-4 mb-2'):
+        with ui.row().classes("w-full justify-center gap-4 mb-2"):
+
             def toggle_faims_view():
                 viewer.show_faims_view = faims_toggle.value
                 if viewer.faims_container:
@@ -3581,23 +3639,27 @@ def create_ui():
                 if viewer.df is not None and viewer.show_faims_view:
                     viewer.update_faims_plots()
 
-            faims_toggle = ui.checkbox('FAIMS Multi-CV View', value=False, on_change=toggle_faims_view).classes('text-purple-400')
+            faims_toggle = ui.checkbox("FAIMS Multi-CV View", value=False, on_change=toggle_faims_view).classes(
+                "text-purple-400"
+            )
             faims_toggle.set_visibility(False)
             viewer.faims_toggle = faims_toggle
 
         # TIC Plot (clickable to show MS1 spectrum, zoomable to update peak map)
-        viewer.tic_expansion = ui.expansion('TIC (Total Ion Chromatogram)', icon='show_chart', value=False).classes('w-full max-w-[1700px]')
+        viewer.tic_expansion = ui.expansion("TIC (Total Ion Chromatogram)", icon="show_chart", value=False).classes(
+            "w-full max-w-[1700px]"
+        )
         with viewer.tic_expansion:
-            ui.label('Click to view spectrum, drag to zoom RT range').classes('text-xs text-gray-500 mb-1')
-            viewer.tic_plot = ui.plotly(viewer.create_tic_plot()).classes('w-full')
+            ui.label("Click to view spectrum, drag to zoom RT range").classes("text-xs text-gray-500 mb-1")
+            viewer.tic_plot = ui.plotly(viewer.create_tic_plot()).classes("w-full")
 
             # Handle click on TIC plot - show closest spectrum and center peak map
             def on_tic_click(e):
                 try:
-                    if e.args and 'points' in e.args and e.args['points']:
-                        point = e.args['points'][0]
-                        if 'x' in point:
-                            rt = point['x']
+                    if e.args and "points" in e.args and e.args["points"]:
+                        point = e.args["points"][0]
+                        if "x" in point:
+                            rt = point["x"]
                             # Show closest spectrum (any MS level) - this also highlights in table
                             viewer.show_spectrum_at_rt(rt)
                             # Also center the peak map on this RT
@@ -3608,7 +3670,7 @@ def create_ui():
                 except Exception:
                     pass
 
-            viewer.tic_plot.on('plotly_click', on_tic_click)
+            viewer.tic_plot.on("plotly_click", on_tic_click)
 
             # Handle zoom/pan on TIC plot - sync RT range to peak map
             def on_tic_relayout(e):
@@ -3616,9 +3678,9 @@ def create_ui():
                     if e.args:
                         args = e.args
                         # Check for x-axis range changes (zoom or pan)
-                        if 'xaxis.range[0]' in args and 'xaxis.range[1]' in args:
-                            new_rt_min = float(args['xaxis.range[0]'])
-                            new_rt_max = float(args['xaxis.range[1]'])
+                        if "xaxis.range[0]" in args and "xaxis.range[1]" in args:
+                            new_rt_min = float(args["xaxis.range[0]"])
+                            new_rt_max = float(args["xaxis.range[1]"])
                             # Clamp to data bounds
                             viewer.view_rt_min = max(viewer.rt_min, new_rt_min)
                             viewer.view_rt_max = min(viewer.rt_max, new_rt_max)
@@ -3626,7 +3688,7 @@ def create_ui():
                             viewer._updating_from_tic = True
                             viewer.update_plot()
                             viewer._updating_from_tic = False
-                        elif 'xaxis.autorange' in args and args['xaxis.autorange']:
+                        elif "xaxis.autorange" in args and args["xaxis.autorange"]:
                             # Reset to full range
                             viewer.view_rt_min = viewer.rt_min
                             viewer.view_rt_max = viewer.rt_max
@@ -3636,52 +3698,72 @@ def create_ui():
                 except Exception:
                     viewer._updating_from_tic = False
 
-            viewer.tic_plot.on('plotly_relayout', on_tic_relayout)
+            viewer.tic_plot.on("plotly_relayout", on_tic_relayout)
 
         # Main visualization area - peak map with spectrum browser overlay (collapsible)
-        with ui.expansion('2D Peak Map', icon='grid_on', value=False).classes('w-full max-w-[1700px]'):
+        with ui.expansion("2D Peak Map", icon="grid_on", value=False).classes("w-full max-w-[1700px]"):
             # Display options row
-            with ui.row().classes('w-full items-center gap-4 mb-2 flex-wrap'):
-                ui.label('Overlay:').classes('text-xs text-gray-400')
+            with ui.row().classes("w-full items-center gap-4 mb-2 flex-wrap"):
+                ui.label("Overlay:").classes("text-xs text-gray-400")
 
                 def toggle_centroids():
                     viewer.show_centroids = centroid_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                centroid_cb = ui.checkbox('Centroids', value=True, on_change=toggle_centroids).props('dense').classes('text-green-400')
+                centroid_cb = (
+                    ui.checkbox("Centroids", value=True, on_change=toggle_centroids)
+                    .props("dense")
+                    .classes("text-green-400")
+                )
 
                 def toggle_bboxes():
                     viewer.show_bounding_boxes = bbox_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                bbox_cb = ui.checkbox('Bounding Boxes', value=False, on_change=toggle_bboxes).props('dense').classes('text-yellow-400')
+                bbox_cb = (
+                    ui.checkbox("Bounding Boxes", value=False, on_change=toggle_bboxes)
+                    .props("dense")
+                    .classes("text-yellow-400")
+                )
 
                 def toggle_hulls():
                     viewer.show_convex_hulls = hull_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                hull_cb = ui.checkbox('Convex Hulls', value=False, on_change=toggle_hulls).props('dense').classes('text-cyan-400')
+                hull_cb = (
+                    ui.checkbox("Convex Hulls", value=False, on_change=toggle_hulls)
+                    .props("dense")
+                    .classes("text-cyan-400")
+                )
 
                 def toggle_ids():
                     viewer.show_ids = ids_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                ids_cb = ui.checkbox('Identifications', value=True, on_change=toggle_ids).props('dense').classes('text-orange-400')
+                ids_cb = (
+                    ui.checkbox("Identifications", value=True, on_change=toggle_ids)
+                    .props("dense")
+                    .classes("text-orange-400")
+                )
 
                 def toggle_id_sequences():
                     viewer.show_id_sequences = id_seq_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                id_seq_cb = ui.checkbox('Sequences', value=False, on_change=toggle_id_sequences).props('dense').classes('text-orange-300')
-                ui.tooltip('Show peptide sequences on 2D peakmap')
+                id_seq_cb = (
+                    ui.checkbox("Sequences", value=False, on_change=toggle_id_sequences)
+                    .props("dense")
+                    .classes("text-orange-300")
+                )
+                ui.tooltip("Show peptide sequences on 2D peakmap")
 
-                ui.label('|').classes('text-gray-600 mx-2')
-                ui.label('Colormap:').classes('text-xs text-gray-400')
+                ui.label("|").classes("text-gray-600 mx-2")
+                ui.label("Colormap:").classes("text-xs text-gray-400")
 
                 def change_colormap(e):
                     viewer.colormap = e.value
@@ -3690,62 +3772,80 @@ def create_ui():
                         viewer.update_minimap()
 
                 colormap_options = list(COLORMAPS.keys())
-                ui.select(colormap_options, value='jet', on_change=change_colormap).props('dense outlined').classes('w-28')
+                ui.select(colormap_options, value="jet", on_change=change_colormap).props("dense outlined").classes(
+                    "w-28"
+                )
 
-                ui.label('|').classes('text-gray-600 mx-2')
-                ui.label('RT:').classes('text-xs text-gray-400')
+                ui.label("|").classes("text-gray-600 mx-2")
+                ui.label("RT:").classes("text-xs text-gray-400")
 
                 def toggle_rt_unit(e):
-                    viewer.rt_in_minutes = (e.value == 'min')
+                    viewer.rt_in_minutes = e.value == "min"
                     if viewer.df is not None:
                         viewer.update_plot()
                         viewer.update_minimap()
                         viewer.update_tic_plot()
 
-                ui.toggle(['sec', 'min'], value='sec', on_change=toggle_rt_unit).props('dense')
+                ui.toggle(["sec", "min"], value="sec", on_change=toggle_rt_unit).props("dense")
 
-                ui.label('|').classes('text-gray-600 mx-2')
+                ui.label("|").classes("text-gray-600 mx-2")
 
                 def toggle_swap_axes():
                     viewer.swap_axes = swap_axes_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                swap_axes_cb = ui.checkbox('Swap Axes', value=True, on_change=toggle_swap_axes).props('dense').classes('text-purple-400')
-                ui.tooltip('When checked: m/z on x-axis, RT on y-axis (default). When unchecked: RT on x-axis, m/z on y-axis.')
+                swap_axes_cb = (
+                    ui.checkbox("Swap Axes", value=True, on_change=toggle_swap_axes)
+                    .props("dense")
+                    .classes("text-purple-400")
+                )
+                ui.tooltip(
+                    "When checked: m/z on x-axis, RT on y-axis (default). When unchecked: RT on x-axis, m/z on y-axis."
+                )
 
                 def toggle_spectrum_marker():
                     viewer.show_spectrum_marker = spectrum_marker_cb.value
                     if viewer.df is not None:
                         viewer.update_plot()
 
-                spectrum_marker_cb = ui.checkbox('Marker', value=True, on_change=toggle_spectrum_marker).props('dense').classes('text-cyan-400')
-                ui.tooltip('Show/hide the spectrum position marker (crosshair) on the 2D peakmap.')
+                spectrum_marker_cb = (
+                    ui.checkbox("Marker", value=True, on_change=toggle_spectrum_marker)
+                    .props("dense")
+                    .classes("text-cyan-400")
+                )
+                ui.tooltip("Show/hide the spectrum position marker (crosshair) on the 2D peakmap.")
 
             # Breadcrumb trail and coordinate display row
-            with ui.row().classes('w-full items-center justify-between mb-1'):
-                with ui.row().classes('items-center gap-2'):
-                    ui.icon('navigation', size='xs').classes('text-gray-400')
-                    viewer.breadcrumb_label = ui.label('Full view').classes('text-xs text-gray-400')
-                viewer.coord_label = ui.label('RT: --  m/z: --').classes('text-xs text-cyan-400 font-mono')
+            with ui.row().classes("w-full items-center justify-between mb-1"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("navigation", size="xs").classes("text-gray-400")
+                    viewer.breadcrumb_label = ui.label("Full view").classes("text-xs text-gray-400")
+                viewer.coord_label = ui.label("RT: --  m/z: --").classes("text-xs text-cyan-400 font-mono")
 
-            ui.label('Scroll to zoom, drag to select region, double-click to reset').classes('text-xs text-gray-500 mb-1')
+            ui.label("Scroll to zoom, drag to select region, double-click to reset").classes(
+                "text-xs text-gray-500 mb-1"
+            )
 
             # Peak map with mouse interaction and minimap
-            with ui.row().classes('w-full items-start gap-2'):
+            with ui.row().classes("w-full items-start gap-2"):
                 # Peak map image with mouse handlers
-                with ui.column().classes('flex-none'):
-                    viewer.image_element = ui.image().classes('w-full').style(
-                        f'width: {viewer.canvas_width}px; height: {viewer.canvas_height}px; background: #141419; cursor: crosshair;'
+                with ui.column().classes("flex-none"):
+                    viewer.image_element = (
+                        ui.image()
+                        .classes("w-full")
+                        .style(
+                            f"width: {viewer.canvas_width}px; height: {viewer.canvas_height}px; background: #141419; cursor: crosshair;"
+                        )
                     )
 
                     # Mouse wheel zoom handler
                     def on_wheel(e):
                         try:
                             # Get mouse position relative to image
-                            offset_x = e.args.get('offsetX', 0)
-                            offset_y = e.args.get('offsetY', 0)
-                            delta_y = e.args.get('deltaY', 0)
+                            offset_x = e.args.get("offsetX", 0)
+                            offset_y = e.args.get("offsetY", 0)
+                            delta_y = e.args.get("deltaY", 0)
 
                             # Convert to plot area coordinates (account for margins)
                             plot_x = offset_x - viewer.margin_left
@@ -3760,31 +3860,31 @@ def create_ui():
                         except Exception:
                             pass
 
-                    viewer.image_element.on('wheel.prevent', on_wheel)
+                    viewer.image_element.on("wheel.prevent", on_wheel)
 
                     # Drag to select region for zoom (no continuous updates - just on release)
-                    drag_state = {'dragging': False, 'start_x': 0, 'start_y': 0}
+                    drag_state = {"dragging": False, "start_x": 0, "start_y": 0}
 
                     def on_mousedown(e):
-                        offset_x = e.args.get('offsetX', 0)
-                        offset_y = e.args.get('offsetY', 0)
+                        offset_x = e.args.get("offsetX", 0)
+                        offset_y = e.args.get("offsetY", 0)
                         # Only start drag if within plot area
                         plot_x = offset_x - viewer.margin_left
                         plot_y = offset_y - viewer.margin_top
                         if 0 <= plot_x <= viewer.plot_width and 0 <= plot_y <= viewer.plot_height:
-                            drag_state['dragging'] = True
-                            drag_state['start_x'] = offset_x
-                            drag_state['start_y'] = offset_y
+                            drag_state["dragging"] = True
+                            drag_state["start_x"] = offset_x
+                            drag_state["start_y"] = offset_y
 
                     def on_mouseup(e):
-                        if drag_state['dragging']:
-                            drag_state['dragging'] = False
-                            end_x = e.args.get('offsetX', 0)
-                            end_y = e.args.get('offsetY', 0)
+                        if drag_state["dragging"]:
+                            drag_state["dragging"] = False
+                            end_x = e.args.get("offsetX", 0)
+                            end_y = e.args.get("offsetY", 0)
 
                             # Calculate selection in plot coordinates
-                            start_plot_x = drag_state['start_x'] - viewer.margin_left
-                            start_plot_y = drag_state['start_y'] - viewer.margin_top
+                            start_plot_x = drag_state["start_x"] - viewer.margin_left
+                            start_plot_y = drag_state["start_y"] - viewer.margin_top
                             end_plot_x = end_x - viewer.margin_left
                             end_plot_y = end_y - viewer.margin_top
 
@@ -3841,62 +3941,62 @@ def create_ui():
                     # Mousemove handler for coordinate display
                     def on_mousemove(e):
                         try:
-                            offset_x = e.args.get('offsetX', 0)
-                            offset_y = e.args.get('offsetY', 0)
+                            offset_x = e.args.get("offsetX", 0)
+                            offset_y = e.args.get("offsetY", 0)
                             viewer.update_coord_display(offset_x, offset_y)
                         except Exception:
                             pass
 
                     def on_mouseleave_coord(e):
-                        drag_state['dragging'] = False
+                        drag_state["dragging"] = False
                         if viewer.coord_label:
-                            viewer.coord_label.set_text('RT: --  m/z: --')
+                            viewer.coord_label.set_text("RT: --  m/z: --")
 
-                    viewer.image_element.on('mousedown', on_mousedown)
-                    viewer.image_element.on('mouseup', on_mouseup)
-                    viewer.image_element.on('mouseleave', on_mouseleave_coord)
-                    viewer.image_element.on('mousemove', on_mousemove)
-                    viewer.image_element.on('dblclick', on_dblclick)
+                    viewer.image_element.on("mousedown", on_mousedown)
+                    viewer.image_element.on("mouseup", on_mouseup)
+                    viewer.image_element.on("mouseleave", on_mouseleave_coord)
+                    viewer.image_element.on("mousemove", on_mousemove)
+                    viewer.image_element.on("dblclick", on_dblclick)
 
                     # 3D View Container (below 2D peakmap, hidden by default)
-                    viewer.scene_3d_container = ui.column().classes('w-full mt-1')
+                    viewer.scene_3d_container = ui.column().classes("w-full mt-1")
                     viewer.scene_3d_container.set_visibility(False)
                     with viewer.scene_3d_container:
-                        viewer.view_3d_status = ui.label('').classes('text-xs text-yellow-400')
+                        viewer.view_3d_status = ui.label("").classes("text-xs text-yellow-400")
                         # Create empty plotly figure for 3D view
                         empty_fig = go.Figure()
                         empty_fig.update_layout(
-                            paper_bgcolor='#1a1a1f',
-                            plot_bgcolor='#1a1a1f',
+                            paper_bgcolor="#1a1a1f",
+                            plot_bgcolor="#1a1a1f",
                             width=viewer.canvas_width,
                             height=500,
                             autosize=False,
-                            margin=dict(l=0, r=0, t=0, b=0)
+                            margin={"l": 0, "r": 0, "t": 0, "b": 0},
                         )
                         # Wrap in explicit div for sizing
-                        with ui.element('div').style(f'width: {viewer.canvas_width}px; height: 500px;'):
-                            viewer.plot_3d = ui.plotly(empty_fig).classes('w-full h-full')
+                        with ui.element("div").style(f"width: {viewer.canvas_width}px; height: 500px;"):
+                            viewer.plot_3d = ui.plotly(empty_fig).classes("w-full h-full")
 
                 # Minimap panel (to the right of peak map)
-                with ui.column().classes('flex-none'):
-                    ui.label('Overview').classes('text-xs text-gray-400 mb-1')
+                with ui.column().classes("flex-none"):
+                    ui.label("Overview").classes("text-xs text-gray-400 mb-1")
                     viewer.minimap_image = ui.image().style(
-                        f'width: {viewer.minimap_width}px; height: {viewer.minimap_height}px; '
-                        f'background: #141419; cursor: pointer; border: 1px solid #333;'
+                        f"width: {viewer.minimap_width}px; height: {viewer.minimap_height}px; "
+                        f"background: #141419; cursor: pointer; border: 1px solid #333;"
                     )
 
                     # Minimap click handler
                     def on_minimap_click(e):
                         try:
-                            offset_x = e.args.get('offsetX', 0)
-                            offset_y = e.args.get('offsetY', 0)
+                            offset_x = e.args.get("offsetX", 0)
+                            offset_y = e.args.get("offsetY", 0)
                             x_frac = offset_x / viewer.minimap_width
                             y_frac = offset_y / viewer.minimap_height
                             viewer.minimap_click_to_view(x_frac, y_frac)
                         except Exception:
                             pass
 
-                    viewer.minimap_image.on('click', on_minimap_click)
+                    viewer.minimap_image.on("click", on_minimap_click)
 
                     # Back and 3D View buttons in same row
                     def go_back():
@@ -3911,60 +4011,91 @@ def create_ui():
                             viewer.update_3d_view()
                         # Update button appearance
                         if viewer.show_3d_view:
-                            view_3d_btn.props('color=purple')
+                            view_3d_btn.props("color=purple")
                         else:
-                            view_3d_btn.props('color=grey')
+                            view_3d_btn.props("color=grey")
 
-                    with ui.row().classes('mt-1 gap-1'):
-                        ui.button('← Back', on_click=go_back).props('dense size=sm color=grey').tooltip('Go to previous view')
-                        view_3d_btn = ui.button('3D', on_click=toggle_3d_view).props('dense size=sm color=grey').tooltip('Toggle 3D peak view')
+                    with ui.row().classes("mt-1 gap-1"):
+                        ui.button("← Back", on_click=go_back).props("dense size=sm color=grey").tooltip(
+                            "Go to previous view"
+                        )
+                        view_3d_btn = (
+                            ui.button("3D", on_click=toggle_3d_view)
+                            .props("dense size=sm color=grey")
+                            .tooltip("Toggle 3D peak view")
+                        )
 
         # 1D Spectrum Browser (collapsible panel, starts collapsed until file is loaded)
-        viewer.spectrum_expansion = ui.expansion('1D Spectrum', icon='show_chart', value=False).classes('w-full max-w-[1700px]')
+        viewer.spectrum_expansion = ui.expansion("1D Spectrum", icon="show_chart", value=False).classes(
+            "w-full max-w-[1700px]"
+        )
         with viewer.spectrum_expansion:
-            with ui.column().classes('w-full items-center'):
+            with ui.column().classes("w-full items-center"):
                 # Navigation and info row
-                with ui.row().classes('w-full items-center gap-2 mb-1').style(f'max-width: {viewer.canvas_width}px;'):
-                    ui.button('|<', on_click=lambda: viewer.show_spectrum_in_browser(0)).props('dense size=sm').tooltip('First')
-                    ui.button('< MS1', on_click=lambda: viewer.navigate_spectrum_by_ms_level(-1, 1)).props('dense size=sm color=cyan').tooltip('Prev MS1')
-                    ui.button('<', on_click=lambda: viewer.navigate_spectrum(-1)).props('dense size=sm').tooltip('Prev')
+                with ui.row().classes("w-full items-center gap-2 mb-1").style(f"max-width: {viewer.canvas_width}px;"):
+                    ui.button("|<", on_click=lambda: viewer.show_spectrum_in_browser(0)).props("dense size=sm").tooltip(
+                        "First"
+                    )
+                    ui.button("< MS1", on_click=lambda: viewer.navigate_spectrum_by_ms_level(-1, 1)).props(
+                        "dense size=sm color=cyan"
+                    ).tooltip("Prev MS1")
+                    ui.button("<", on_click=lambda: viewer.navigate_spectrum(-1)).props("dense size=sm").tooltip("Prev")
 
-                    viewer.spectrum_nav_label = ui.label('No spectrum').classes('mx-2 text-gray-400 text-sm')
+                    viewer.spectrum_nav_label = ui.label("No spectrum").classes("mx-2 text-gray-400 text-sm")
 
-                    ui.button('>', on_click=lambda: viewer.navigate_spectrum(1)).props('dense size=sm').tooltip('Next')
-                    ui.button('MS1 >', on_click=lambda: viewer.navigate_spectrum_by_ms_level(1, 1)).props('dense size=sm color=cyan').tooltip('Next MS1')
-                    ui.button('>|', on_click=lambda: viewer.show_spectrum_in_browser(viewer.exp.size() - 1 if viewer.exp else 0)).props('dense size=sm').tooltip('Last')
+                    ui.button(">", on_click=lambda: viewer.navigate_spectrum(1)).props("dense size=sm").tooltip("Next")
+                    ui.button("MS1 >", on_click=lambda: viewer.navigate_spectrum_by_ms_level(1, 1)).props(
+                        "dense size=sm color=cyan"
+                    ).tooltip("Next MS1")
+                    ui.button(
+                        ">|",
+                        on_click=lambda: viewer.show_spectrum_in_browser(viewer.exp.size() - 1 if viewer.exp else 0),
+                    ).props("dense size=sm").tooltip("Last")
 
-                    ui.label('|').classes('mx-1 text-gray-600')
-                    ui.button('< MS2', on_click=lambda: viewer.navigate_spectrum_by_ms_level(-1, 2)).props('dense size=sm color=orange').tooltip('Prev MS2')
-                    ui.button('MS2 >', on_click=lambda: viewer.navigate_spectrum_by_ms_level(1, 2)).props('dense size=sm color=orange').tooltip('Next MS2')
+                    ui.label("|").classes("mx-1 text-gray-600")
+                    ui.button("< MS2", on_click=lambda: viewer.navigate_spectrum_by_ms_level(-1, 2)).props(
+                        "dense size=sm color=orange"
+                    ).tooltip("Prev MS2")
+                    ui.button("MS2 >", on_click=lambda: viewer.navigate_spectrum_by_ms_level(1, 2)).props(
+                        "dense size=sm color=orange"
+                    ).tooltip("Next MS2")
 
-                    ui.element('div').classes('flex-grow')  # Spacer
+                    ui.element("div").classes("flex-grow")  # Spacer
 
                     # Intensity display toggle
-                    ui.label('Intensity:').classes('text-xs text-gray-400')
-                    ui.toggle(['%', 'abs'], value='%', on_change=lambda e: (
-                        setattr(viewer, 'spectrum_intensity_percent', e.value == '%'),
-                        viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx) if viewer.selected_spectrum_idx is not None else None
-                    )).props('dense size=sm color=grey').tooltip('Toggle between relative (%) and absolute intensity')
+                    ui.label("Intensity:").classes("text-xs text-gray-400")
+                    ui.toggle(
+                        ["%", "abs"],
+                        value="%",
+                        on_change=lambda e: (
+                            setattr(viewer, "spectrum_intensity_percent", e.value == "%"),
+                            viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+                            if viewer.selected_spectrum_idx is not None
+                            else None,
+                        ),
+                    ).props("dense size=sm color=grey").tooltip("Toggle between relative (%) and absolute intensity")
 
-                    ui.label('|').classes('mx-1 text-gray-600')
-                    viewer.spectrum_browser_info = ui.label('Click TIC or use spectrum table to select').classes('text-xs text-gray-500')
+                    ui.label("|").classes("mx-1 text-gray-600")
+                    viewer.spectrum_browser_info = ui.label("Click TIC or use spectrum table to select").classes(
+                        "text-xs text-gray-500"
+                    )
 
                 # Spectrum plot
-                viewer.spectrum_browser_plot = ui.plotly(go.Figure()).classes('w-full')
+                viewer.spectrum_browser_plot = ui.plotly(go.Figure()).classes("w-full")
 
         # FAIMS Multi-CV Peak Maps (hidden by default)
-        faims_container = ui.card().classes('w-full max-w-6xl mt-2 p-2')
+        faims_container = ui.card().classes("w-full max-w-6xl mt-2 p-2")
         faims_container.set_visibility(False)
         viewer.faims_container = faims_container
 
         with faims_container:
-            ui.label('FAIMS Compensation Voltage Peak Maps').classes('text-lg font-semibold mb-2 text-purple-300')
-            ui.label('Separate peak maps for each CV value - zoom/pan is synchronized').classes('text-xs text-gray-500 mb-2')
+            ui.label("FAIMS Compensation Voltage Peak Maps").classes("text-lg font-semibold mb-2 text-purple-300")
+            ui.label("Separate peak maps for each CV value - zoom/pan is synchronized").classes(
+                "text-xs text-gray-500 mb-2"
+            )
 
             # Container for dynamic FAIMS images
-            faims_row = ui.row().classes('w-full gap-1 flex-wrap justify-center')
+            faims_row = ui.row().classes("w-full gap-1 flex-wrap justify-center")
 
             # Note: Actual images will be created dynamically when FAIMS data is loaded
             # We need to create a method to dynamically populate this container
@@ -3984,9 +4115,9 @@ def create_ui():
 
                 with faims_row:
                     for cv in viewer.faims_cvs:
-                        with ui.column().classes('flex-none'):
+                        with ui.column().classes("flex-none"):
                             img = ui.image().style(
-                                f'width: {panel_width}px; height: {panel_height}px; background: #141419;'
+                                f"width: {panel_width}px; height: {panel_height}px; background: #141419;"
                             )
                             viewer.faims_images[cv] = img
 
@@ -3994,37 +4125,49 @@ def create_ui():
             viewer._create_faims_images = create_faims_images
 
         # Unified Spectra Table (combines spectrum metadata + ID info)
-        viewer.spectrum_table_expansion = ui.expansion('Spectra', icon='list', value=False).classes('w-full max-w-[1700px]')
+        viewer.spectrum_table_expansion = ui.expansion("Spectra", icon="list", value=False).classes(
+            "w-full max-w-[1700px]"
+        )
         with viewer.spectrum_table_expansion:
-            ui.label('Click a row to view spectrum. Identified spectra show sequence and score.').classes('text-sm text-gray-400 mb-2')
+            ui.label("Click a row to view spectrum. Identified spectra show sequence and score.").classes(
+                "text-sm text-gray-400 mb-2"
+            )
 
             # View mode and column toggles
-            with ui.row().classes('w-full items-center gap-4 mb-2'):
+            with ui.row().classes("w-full items-center gap-4 mb-2"):
                 # View filter: All, MS2 Only, Identified Only
-                view_mode = ui.toggle(
-                    ['All', 'MS2', 'Identified'],
-                    value='All',
-                ).props('dense size=sm').classes('text-xs')
+                view_mode = (
+                    ui.toggle(
+                        ["All", "MS2", "Identified"],
+                        value="All",
+                    )
+                    .props("dense size=sm")
+                    .classes("text-xs")
+                )
 
                 # Advanced columns toggle
-                show_advanced = ui.checkbox('Advanced', value=False).props('dense').classes('text-xs text-gray-400')
-                ui.tooltip('Show additional columns: Peaks, TIC, BPI, m/z Range')
+                show_advanced = ui.checkbox("Advanced", value=False).props("dense").classes("text-xs text-gray-400")
+                ui.tooltip("Show additional columns: Peaks, TIC, BPI, m/z Range")
 
                 # Meta Values columns toggle
-                show_meta_values = ui.checkbox('Meta Values', value=False).props('dense').classes('text-xs text-gray-400')
-                ui.tooltip('Show PeptideIdentification (pid:) and PeptideHit (hit:) meta values')
+                show_meta_values = (
+                    ui.checkbox("Meta Values", value=False).props("dense").classes("text-xs text-gray-400")
+                )
+                ui.tooltip("Show PeptideIdentification (pid:) and PeptideHit (hit:) meta values")
 
                 # All Hits toggle - shows all peptide hits, not just best hit
-                show_all_hits = ui.checkbox('All Hits', value=False).props('dense').classes('text-xs text-gray-400')
-                ui.tooltip('Show all peptide hits for each spectrum (default: best hit only)')
+                show_all_hits = ui.checkbox("All Hits", value=False).props("dense").classes("text-xs text-gray-400")
+                ui.tooltip("Show all peptide hits for each spectrum (default: best hit only)")
 
             # Additional filters row
-            with ui.row().classes('w-full items-end gap-2 mb-2 flex-wrap'):
-                ui.label('Filter:').classes('text-xs text-gray-400')
-                spec_rt_min = ui.number(label='RT Min', format='%.0f').props('dense outlined').classes('w-20')
-                spec_rt_max = ui.number(label='RT Max', format='%.0f').props('dense outlined').classes('w-20')
-                spec_seq_pattern = ui.input(label='Sequence', placeholder='e.g. PEPTIDE').props('dense outlined').classes('w-28')
-                spec_min_score = ui.number(label='Min Score', format='%.2f').props('dense outlined').classes('w-24')
+            with ui.row().classes("w-full items-end gap-2 mb-2 flex-wrap"):
+                ui.label("Filter:").classes("text-xs text-gray-400")
+                spec_rt_min = ui.number(label="RT Min", format="%.0f").props("dense outlined").classes("w-20")
+                spec_rt_max = ui.number(label="RT Max", format="%.0f").props("dense outlined").classes("w-20")
+                spec_seq_pattern = (
+                    ui.input(label="Sequence", placeholder="e.g. PEPTIDE").props("dense outlined").classes("w-28")
+                )
+                spec_min_score = ui.number(label="Min Score", format="%.2f").props("dense outlined").classes("w-24")
 
                 # Annotation settings
                 def toggle_annotate_peaks():
@@ -4038,39 +4181,55 @@ def create_ui():
                         if viewer.selected_spectrum_idx is not None and viewer.annotate_peaks:
                             viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
 
-                annotate_peaks_cb = ui.checkbox(
-                    'Annotate',
-                    value=viewer.annotate_peaks,
-                    on_change=toggle_annotate_peaks
-                ).props('dense').classes('text-blue-400')
+                annotate_peaks_cb = (
+                    ui.checkbox("Annotate", value=viewer.annotate_peaks, on_change=toggle_annotate_peaks)
+                    .props("dense")
+                    .classes("text-blue-400")
+                )
 
-                tolerance_input = ui.number(
-                    label='Tol (Da)',
-                    value=viewer.annotation_tolerance_da,
-                    format='%.2f',
-                    on_change=update_tolerance
-                ).props('dense outlined').classes('w-20')
-                ui.tooltip('Mass tolerance for matching peaks to theoretical ions (Da)')
+                tolerance_input = (
+                    ui.number(
+                        label="Tol (Da)",
+                        value=viewer.annotation_tolerance_da,
+                        format="%.2f",
+                        on_change=update_tolerance,
+                    )
+                    .props("dense outlined")
+                    .classes("w-20")
+                )
+                ui.tooltip("Mass tolerance for matching peaks to theoretical ions (Da)")
 
             # Define all columns - basic and advanced
             basic_columns = [
-                {'name': 'idx', 'label': '#', 'field': 'idx', 'sortable': True, 'align': 'left'},
-                {'name': 'rt', 'label': 'RT (s)', 'field': 'rt', 'sortable': True, 'align': 'right'},
-                {'name': 'ms_level', 'label': 'MS', 'field': 'ms_level', 'sortable': True, 'align': 'center'},
-                {'name': 'precursor_mz', 'label': 'Prec m/z', 'field': 'precursor_mz', 'sortable': True, 'align': 'right'},
-                {'name': 'precursor_z', 'label': 'Z', 'field': 'precursor_z', 'sortable': True, 'align': 'center'},
-                {'name': 'sequence', 'label': 'Sequence', 'field': 'sequence', 'sortable': True, 'align': 'left'},
-                {'name': 'score', 'label': 'Score', 'field': 'score', 'sortable': True, 'align': 'right'},
+                {"name": "idx", "label": "#", "field": "idx", "sortable": True, "align": "left"},
+                {"name": "rt", "label": "RT (s)", "field": "rt", "sortable": True, "align": "right"},
+                {"name": "ms_level", "label": "MS", "field": "ms_level", "sortable": True, "align": "center"},
+                {
+                    "name": "precursor_mz",
+                    "label": "Prec m/z",
+                    "field": "precursor_mz",
+                    "sortable": True,
+                    "align": "right",
+                },
+                {"name": "precursor_z", "label": "Z", "field": "precursor_z", "sortable": True, "align": "center"},
+                {"name": "sequence", "label": "Sequence", "field": "sequence", "sortable": True, "align": "left"},
+                {"name": "score", "label": "Score", "field": "score", "sortable": True, "align": "right"},
             ]
 
             # Rank column (shown when All Hits is enabled)
-            rank_column = {'name': 'hit_rank', 'label': 'Rank', 'field': 'hit_rank', 'sortable': True, 'align': 'center'}
+            rank_column = {
+                "name": "hit_rank",
+                "label": "Rank",
+                "field": "hit_rank",
+                "sortable": True,
+                "align": "center",
+            }
 
             advanced_columns = [
-                {'name': 'n_peaks', 'label': 'Peaks', 'field': 'n_peaks', 'sortable': True, 'align': 'right'},
-                {'name': 'tic', 'label': 'TIC', 'field': 'tic', 'sortable': True, 'align': 'right'},
-                {'name': 'bpi', 'label': 'BPI', 'field': 'bpi', 'sortable': True, 'align': 'right'},
-                {'name': 'mz_range', 'label': 'm/z Range', 'field': 'mz_range', 'sortable': False, 'align': 'center'},
+                {"name": "n_peaks", "label": "Peaks", "field": "n_peaks", "sortable": True, "align": "right"},
+                {"name": "tic", "label": "TIC", "field": "tic", "sortable": True, "align": "right"},
+                {"name": "bpi", "label": "BPI", "field": "bpi", "sortable": True, "align": "right"},
+                {"name": "mz_range", "label": "m/z Range", "field": "mz_range", "sortable": False, "align": "center"},
             ]
 
             def get_meta_columns():
@@ -4078,22 +4237,24 @@ def create_ui():
                 meta_cols = []
                 for key in viewer.id_meta_keys:
                     # Create readable label from key (e.g., "pid:spectrum_reference" -> "Spectrum Ref (PID)")
-                    prefix, name = key.split(':', 1) if ':' in key else ('', key)
+                    prefix, name = key.split(":", 1) if ":" in key else ("", key)
                     # Shorten common prefixes
-                    label_prefix = 'PID' if prefix == 'pid' else 'Hit' if prefix == 'hit' else prefix.upper()
+                    label_prefix = "PID" if prefix == "pid" else "Hit" if prefix == "hit" else prefix.upper()
                     # Convert underscores to spaces and title case
-                    label_name = name.replace('_', ' ').title()
+                    label_name = name.replace("_", " ").title()
                     # Truncate long names
                     if len(label_name) > 15:
-                        label_name = label_name[:13] + '..'
+                        label_name = label_name[:13] + ".."
                     label = f"{label_name} ({label_prefix})"
-                    meta_cols.append({
-                        'name': key,
-                        'label': label,
-                        'field': key,
-                        'sortable': True,
-                        'align': 'left',
-                    })
+                    meta_cols.append(
+                        {
+                            "name": key,
+                            "label": label,
+                            "field": key,
+                            "sortable": True,
+                            "align": "left",
+                        }
+                    )
                 return meta_cols
 
             def build_columns():
@@ -4116,53 +4277,58 @@ def create_ui():
 
                 # Apply view mode filter
                 mode = view_mode.value
-                if mode == 'MS2':
-                    data = [s for s in data if s['ms_level'] == 2]
-                elif mode == 'Identified':
-                    data = [s for s in data if s.get('id_idx') is not None]
+                if mode == "MS2":
+                    data = [s for s in data if s["ms_level"] == 2]
+                elif mode == "Identified":
+                    data = [s for s in data if s.get("id_idx") is not None]
 
                 # Apply RT filter
                 if spec_rt_min.value is not None:
-                    data = [s for s in data if s['rt'] >= spec_rt_min.value]
+                    data = [s for s in data if s["rt"] >= spec_rt_min.value]
                 if spec_rt_max.value is not None:
-                    data = [s for s in data if s['rt'] <= spec_rt_max.value]
+                    data = [s for s in data if s["rt"] <= spec_rt_max.value]
 
                 # Expand to all hits if enabled
                 if show_all_hits.value:
                     expanded_data = []
                     for s in data:
-                        all_hits = s.get('all_hits', [])
+                        all_hits = s.get("all_hits", [])
                         if all_hits:
                             # Create a row for each hit
                             for hit_data in all_hits:
                                 row = dict(s)  # Copy spectrum base data
-                                row['sequence'] = hit_data['sequence']
-                                row['full_sequence'] = hit_data['full_sequence']
-                                row['score'] = hit_data['score']
-                                row['hit_rank'] = hit_data['hit_rank']
-                                row['hit_idx'] = hit_data['hit_idx']
+                                row["sequence"] = hit_data["sequence"]
+                                row["full_sequence"] = hit_data["full_sequence"]
+                                row["score"] = hit_data["score"]
+                                row["hit_rank"] = hit_data["hit_rank"]
+                                row["hit_idx"] = hit_data["hit_idx"]
                                 # Add meta values from this hit
-                                for key, value in hit_data['meta_values'].items():
+                                for key, value in hit_data["meta_values"].items():
                                     row[key] = value
                                 # Create unique row key for table
-                                row['row_key'] = f"{s['idx']}_{hit_data['hit_rank']}"
+                                row["row_key"] = f"{s['idx']}_{hit_data['hit_rank']}"
                                 expanded_data.append(row)
                         else:
                             # No hits - keep row as is
                             row = dict(s)
-                            row['row_key'] = f"{s['idx']}_0"
+                            row["row_key"] = f"{s['idx']}_0"
                             expanded_data.append(row)
                     data = expanded_data
 
                 # Apply sequence filter (after expansion so it filters all hits)
                 if spec_seq_pattern.value:
                     pattern = spec_seq_pattern.value.upper()
-                    data = [s for s in data if pattern in s.get('full_sequence', '').upper()]
+                    data = [s for s in data if pattern in s.get("full_sequence", "").upper()]
 
                 # Apply score filter
                 if spec_min_score.value is not None:
-                    data = [s for s in data if s.get('score') != '-' and
-                            isinstance(s.get('score'), (int, float)) and s['score'] >= spec_min_score.value]
+                    data = [
+                        s
+                        for s in data
+                        if s.get("score") != "-"
+                        and isinstance(s.get("score"), (int, float))
+                        and s["score"] >= spec_min_score.value
+                    ]
 
                 return data
 
@@ -4184,20 +4350,20 @@ def create_ui():
                 """Update both columns and rows when All Hits checkbox changes."""
                 update_table()
 
-            view_mode.on('update:model-value', on_view_mode_change)
-            show_advanced.on('update:model-value', on_column_toggle_change)
-            show_meta_values.on('update:model-value', on_column_toggle_change)
-            show_all_hits.on('update:model-value', on_all_hits_change)
+            view_mode.on("update:model-value", on_view_mode_change)
+            show_advanced.on("update:model-value", on_column_toggle_change)
+            show_meta_values.on("update:model-value", on_column_toggle_change)
+            show_all_hits.on("update:model-value", on_all_hits_change)
 
             # Filter buttons
-            with ui.row().classes('gap-2 mb-2'):
-                ui.button('Apply', on_click=update_table).props('dense size=sm color=primary')
+            with ui.row().classes("gap-2 mb-2"):
+                ui.button("Apply", on_click=update_table).props("dense size=sm color=primary")
 
                 def reset_filters():
-                    view_mode.value = 'All'
+                    view_mode.value = "All"
                     spec_rt_min.value = None
                     spec_rt_max.value = None
-                    spec_seq_pattern.value = ''
+                    spec_seq_pattern.value = ""
                     spec_min_score.value = None
                     show_advanced.value = False
                     show_meta_values.value = False
@@ -4205,36 +4371,60 @@ def create_ui():
                     viewer.spectrum_table.rows = viewer.spectrum_data
                     viewer.spectrum_table.columns = basic_columns
 
-                ui.button('Reset', on_click=reset_filters).props('dense size=sm color=grey')
+                ui.button("Reset", on_click=reset_filters).props("dense size=sm color=grey")
 
             def on_spectrum_click(e):
                 row = e.args[1]
-                if row and 'idx' in row:
-                    viewer.show_spectrum_in_browser(row['idx'])
+                if row and "idx" in row:
+                    # If this spectrum has an associated ID, zoom the peakmap to that location
+                    if row.get("id_idx") is not None:
+                        viewer.zoom_to_id(row["id_idx"])
+                    else:
+                        viewer.show_spectrum_in_browser(row["idx"])
 
-            viewer.spectrum_table = ui.table(
-                columns=basic_columns, rows=viewer.spectrum_data, row_key='idx',
-                pagination={'rowsPerPage': 10, 'sortBy': 'idx', 'descending': False},
-                selection='single',
-                on_select=lambda e: viewer.show_spectrum_in_browser(e.selection[0]['idx']) if e.selection else None
-            ).classes('w-full').on('rowClick', on_spectrum_click)
-            viewer.spectrum_table.props('dark flat bordered dense')
+            def on_spectrum_select(e):
+                if e.selection:
+                    row = e.selection[0]
+                    if row.get("id_idx") is not None:
+                        viewer.zoom_to_id(row["id_idx"])
+                    else:
+                        viewer.show_spectrum_in_browser(row["idx"])
+
+            viewer.spectrum_table = (
+                ui.table(
+                    columns=basic_columns,
+                    rows=viewer.spectrum_data,
+                    row_key="idx",
+                    pagination={"rowsPerPage": 10, "sortBy": "idx", "descending": False},
+                    selection="single",
+                    on_select=on_spectrum_select,
+                )
+                .classes("w-full")
+                .on("rowClick", on_spectrum_click)
+            )
+            viewer.spectrum_table.props("dark flat bordered dense")
 
         # Feature Table
-        with ui.expansion('Features', icon='scatter_plot').classes('w-full max-w-[1700px]'):
-            ui.label('Click a row to zoom to that feature').classes('text-sm text-gray-400 mb-2')
+        with ui.expansion("Features", icon="scatter_plot").classes("w-full max-w-[1700px]"):
+            ui.label("Click a row to zoom to that feature").classes("text-sm text-gray-400 mb-2")
 
             # Feature filters row
-            with ui.row().classes('w-full items-end gap-2 mb-2 flex-wrap'):
-                ui.label('Filter:').classes('text-xs text-gray-400')
-                feat_min_intensity = ui.number(label='Min Intensity', format='%.0f').props('dense outlined').classes('w-28')
-                feat_min_quality = ui.number(label='Min Quality', format='%.2f').props('dense outlined').classes('w-24')
-                feat_charge = ui.select(['All', '1', '2', '3', '4', '5+'], value='All', label='Charge').props('dense outlined').classes('w-20')
+            with ui.row().classes("w-full items-end gap-2 mb-2 flex-wrap"):
+                ui.label("Filter:").classes("text-xs text-gray-400")
+                feat_min_intensity = (
+                    ui.number(label="Min Intensity", format="%.0f").props("dense outlined").classes("w-28")
+                )
+                feat_min_quality = ui.number(label="Min Quality", format="%.2f").props("dense outlined").classes("w-24")
+                feat_charge = (
+                    ui.select(["All", "1", "2", "3", "4", "5+"], value="All", label="Charge")
+                    .props("dense outlined")
+                    .classes("w-20")
+                )
 
                 def apply_feature_filter():
                     charge_val = None
-                    if feat_charge.value and feat_charge.value != 'All':
-                        if feat_charge.value == '5+':
+                    if feat_charge.value and feat_charge.value != "All":
+                        if feat_charge.value == "5+":
                             charge_val = 5  # Will match 5 or greater
                         else:
                             charge_val = int(feat_charge.value)
@@ -4242,7 +4432,7 @@ def create_ui():
                     filtered = viewer.filter_feature_data(
                         min_intensity=feat_min_intensity.value if feat_min_intensity.value else None,
                         min_quality=feat_min_quality.value if feat_min_quality.value else None,
-                        charge=charge_val
+                        charge=charge_val,
                     )
                     viewer.feature_table.rows = filtered
                     ui.notify(f"Showing {len(filtered)} features", type="info")
@@ -4250,32 +4440,32 @@ def create_ui():
                 def reset_feature_filter():
                     feat_min_intensity.value = None
                     feat_min_quality.value = None
-                    feat_charge.value = 'All'
+                    feat_charge.value = "All"
                     viewer.feature_table.rows = viewer.feature_data
 
-                ui.button('Apply', on_click=apply_feature_filter).props('dense size=sm color=primary')
-                ui.button('Reset', on_click=reset_feature_filter).props('dense size=sm color=grey')
+                ui.button("Apply", on_click=apply_feature_filter).props("dense size=sm color=primary")
+                ui.button("Reset", on_click=reset_feature_filter).props("dense size=sm color=grey")
 
             feature_columns = [
-                {'name': 'idx', 'label': '#', 'field': 'idx', 'sortable': True, 'align': 'left'},
-                {'name': 'rt', 'label': 'RT (s)', 'field': 'rt', 'sortable': True, 'align': 'right'},
-                {'name': 'mz', 'label': 'm/z', 'field': 'mz', 'sortable': True, 'align': 'right'},
-                {'name': 'intensity', 'label': 'Intensity', 'field': 'intensity', 'sortable': True, 'align': 'right'},
-                {'name': 'charge', 'label': 'Z', 'field': 'charge', 'sortable': True, 'align': 'center'},
-                {'name': 'quality', 'label': 'Quality', 'field': 'quality', 'sortable': True, 'align': 'right'},
+                {"name": "idx", "label": "#", "field": "idx", "sortable": True, "align": "left"},
+                {"name": "rt", "label": "RT (s)", "field": "rt", "sortable": True, "align": "right"},
+                {"name": "mz", "label": "m/z", "field": "mz", "sortable": True, "align": "right"},
+                {"name": "intensity", "label": "Intensity", "field": "intensity", "sortable": True, "align": "right"},
+                {"name": "charge", "label": "Z", "field": "charge", "sortable": True, "align": "center"},
+                {"name": "quality", "label": "Quality", "field": "quality", "sortable": True, "align": "right"},
             ]
 
             def on_feature_click(e):
                 row = e.args[1]
-                if row and 'idx' in row:
-                    viewer.zoom_to_feature(row['idx'])
+                if row and "idx" in row:
+                    viewer.zoom_to_feature(row["idx"])
 
             def on_feature_hover(e):
                 """Handle feature row hover for visual feedback."""
                 try:
                     row = e.args[1] if len(e.args) > 1 else None
-                    if row and 'idx' in row:
-                        viewer.set_hover_feature(row['idx'])
+                    if row and "idx" in row:
+                        viewer.set_hover_feature(row["idx"])
                 except Exception:
                     pass
 
@@ -4283,127 +4473,156 @@ def create_ui():
                 """Clear feature hover state."""
                 viewer.clear_hover()
 
-            viewer.feature_table = ui.table(
-                columns=feature_columns, rows=[], row_key='idx',
-                pagination={'rowsPerPage': 8, 'sortBy': 'intensity', 'descending': True}
-            ).classes('w-full hover-highlight').on('rowClick', on_feature_click)
-            viewer.feature_table.on('row-dblclick', on_feature_hover)  # Use dblclick as hover proxy
-            viewer.feature_table.props('dark flat bordered dense')
+            viewer.feature_table = (
+                ui.table(
+                    columns=feature_columns,
+                    rows=[],
+                    row_key="idx",
+                    pagination={"rowsPerPage": 8, "sortBy": "intensity", "descending": True},
+                )
+                .classes("w-full hover-highlight")
+                .on("rowClick", on_feature_click)
+            )
+            viewer.feature_table.on("row-dblclick", on_feature_hover)  # Use dblclick as hover proxy
+            viewer.feature_table.props("dark flat bordered dense")
 
         # Custom range
-        with ui.expansion('Custom Range', icon='tune').classes('w-full max-w-[1700px] mt-4'):
-            with ui.row().classes('w-full gap-4 items-end'):
-                rt_min_input = ui.number(label='RT Min (s)', value=0, format='%.2f')
-                rt_max_input = ui.number(label='RT Max (s)', value=1000, format='%.2f')
-                mz_min_input = ui.number(label='m/z Min', value=0, format='%.2f')
-                mz_max_input = ui.number(label='m/z Max', value=2000, format='%.2f')
+        with ui.expansion("Custom Range", icon="tune").classes("w-full max-w-[1700px] mt-4"):
+            with ui.row().classes("w-full gap-4 items-end"):
+                rt_min_input = ui.number(label="RT Min (s)", value=0, format="%.2f")
+                rt_max_input = ui.number(label="RT Max (s)", value=1000, format="%.2f")
+                mz_min_input = ui.number(label="m/z Min", value=0, format="%.2f")
+                mz_max_input = ui.number(label="m/z Max", value=2000, format="%.2f")
 
                 def apply_range():
                     viewer.apply_custom_range(
-                        rt_min_input.value, rt_max_input.value,
-                        mz_min_input.value, mz_max_input.value
+                        rt_min_input.value, rt_max_input.value, mz_min_input.value, mz_max_input.value
                     )
 
-                ui.button('Apply Range', on_click=apply_range).props('color=primary')
+                ui.button("Apply Range", on_click=apply_range).props("color=primary")
 
         # Legend
-        with ui.expansion('Legend & Help', icon='help').classes('w-full max-w-[1700px] mt-2'):
-            with ui.row().classes('gap-8 flex-wrap'):
+        with ui.expansion("Legend & Help", icon="help").classes("w-full max-w-[1700px] mt-2"):
+            with ui.row().classes("gap-8 flex-wrap"):
                 with ui.column():
-                    ui.label('Overlay Colors:').classes('font-semibold')
-                    with ui.row().classes('items-center gap-2'):
-                        ui.html('<div style="width:16px;height:16px;background:#00ff64;border-radius:50%;border:1px solid white;"></div>', sanitize=False)
-                        ui.label('Feature Centroid')
-                    with ui.row().classes('items-center gap-2'):
+                    ui.label("Overlay Colors:").classes("font-semibold")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.html(
+                            '<div style="width:16px;height:16px;background:#00ff64;border-radius:50%;border:1px solid white;"></div>',
+                            sanitize=False,
+                        )
+                        ui.label("Feature Centroid")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:16px;height:16px;border:2px solid #ffff00;"></div>', sanitize=False)
-                        ui.label('Feature Bounding Box')
-                    with ui.row().classes('items-center gap-2'):
-                        ui.html('<div style="width:16px;height:16px;background:rgba(0,200,255,0.5);border:1px solid #00c8ff;"></div>', sanitize=False)
-                        ui.label('Feature Convex Hull')
-                    with ui.row().classes('items-center gap-2'):
-                        ui.html('<div style="width:16px;height:16px;background:#ff9632;transform:rotate(45deg);"></div>', sanitize=False)
-                        ui.label('ID Precursor Position')
-                    with ui.row().classes('items-center gap-2'):
-                        ui.html('<div style="width:16px;height:16px;background:#ff64ff;border-radius:50%;"></div>', sanitize=False)
-                        ui.label('Selected Item')
+                        ui.label("Feature Bounding Box")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.html(
+                            '<div style="width:16px;height:16px;background:rgba(0,200,255,0.5);border:1px solid #00c8ff;"></div>',
+                            sanitize=False,
+                        )
+                        ui.label("Feature Convex Hull")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.html(
+                            '<div style="width:16px;height:16px;background:#ff9632;transform:rotate(45deg);"></div>',
+                            sanitize=False,
+                        )
+                        ui.label("ID Precursor Position")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.html(
+                            '<div style="width:16px;height:16px;background:#ff64ff;border-radius:50%;"></div>',
+                            sanitize=False,
+                        )
+                        ui.label("Selected Item")
 
                 with ui.column():
-                    ui.label('Spectrum Annotation:').classes('font-semibold')
-                    with ui.row().classes('items-center gap-2'):
+                    ui.label("Spectrum Annotation:").classes("font-semibold")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:16px;height:16px;background:#1f77b4;"></div>', sanitize=False)
-                        ui.label('b-ions (blue)')
-                    with ui.row().classes('items-center gap-2'):
+                        ui.label("b-ions (blue)")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:16px;height:16px;background:#d62728;"></div>', sanitize=False)
-                        ui.label('y-ions (red)')
-                    with ui.row().classes('items-center gap-2'):
+                        ui.label("y-ions (red)")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:16px;height:16px;background:gray;"></div>', sanitize=False)
-                        ui.label('Unmatched peaks')
+                        ui.label("Unmatched peaks")
 
                 with ui.column():
-                    ui.label('TIC & Spectra:').classes('font-semibold')
-                    with ui.row().classes('items-center gap-2'):
+                    ui.label("TIC & Spectra:").classes("font-semibold")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:16px;height:4px;background:#00d4ff;"></div>', sanitize=False)
-                        ui.label('TIC trace')
-                    with ui.row().classes('items-center gap-2'):
-                        ui.html('<div style="width:16px;height:16px;background:rgba(255,255,0,0.2);border:1px solid rgba(255,255,0,0.5);"></div>', sanitize=False)
-                        ui.label('Current view range')
-                    with ui.row().classes('items-center gap-2'):
+                        ui.label("TIC trace")
+                    with ui.row().classes("items-center gap-2"):
+                        ui.html(
+                            '<div style="width:16px;height:16px;background:rgba(255,255,0,0.2);border:1px solid rgba(255,255,0,0.5);"></div>',
+                            sanitize=False,
+                        )
+                        ui.label("Current view range")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:16px;height:16px;background:#00ff64;"></div>', sanitize=False)
-                        ui.label('MS1 spectrum peaks')
-                    with ui.row().classes('items-center gap-2'):
+                        ui.label("MS1 spectrum peaks")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:2px;height:16px;background:#00d4ff;"></div>', sanitize=False)
-                        ui.label('MS1 spectrum marker (cyan)')
-                    with ui.row().classes('items-center gap-2'):
+                        ui.label("MS1 spectrum marker (cyan)")
+                    with ui.row().classes("items-center gap-2"):
                         ui.html('<div style="width:2px;height:16px;background:#ff6b6b;"></div>', sanitize=False)
-                        ui.label('MS2 spectrum marker (red)')
+                        ui.label("MS2 spectrum marker (red)")
 
                 with ui.column():
-                    ui.label('Keyboard Shortcuts:').classes('font-semibold')
-                    ui.markdown('''
+                    ui.label("Keyboard Shortcuts:").classes("font-semibold")
+                    ui.markdown("""
 | Key | Action |
 |-----|--------|
 | `+` / `=` | Zoom In |
 | `-` | Zoom Out |
 | `Arrow Keys` | Pan |
 | `Home` | Reset View |
-                    ''')
+                    """)
 
         # Keyboard handlers
         ui.keyboard(
             on_key=lambda e: (
-                viewer.zoom_in() if e.key in ['+', '='] and e.action.keydown else
-                viewer.zoom_out() if e.key == '-' and e.action.keydown else
-                viewer.pan(rt_frac=-0.1) if e.key.arrow_left and e.action.keydown else
-                viewer.pan(rt_frac=0.1) if e.key.arrow_right and e.action.keydown else
-                viewer.pan(mz_frac=0.1) if e.key.arrow_up and e.action.keydown else
-                viewer.pan(mz_frac=-0.1) if e.key.arrow_down and e.action.keydown else
-                viewer.reset_view() if e.key == 'Home' and e.action.keydown else
-                None
+                viewer.zoom_in()
+                if e.key in ["+", "="] and e.action.keydown
+                else viewer.zoom_out()
+                if e.key == "-" and e.action.keydown
+                else viewer.pan(rt_frac=-0.1)
+                if e.key.arrow_left and e.action.keydown
+                else viewer.pan(rt_frac=0.1)
+                if e.key.arrow_right and e.action.keydown
+                else viewer.pan(mz_frac=0.1)
+                if e.key.arrow_up and e.action.keydown
+                else viewer.pan(mz_frac=-0.1)
+                if e.key.arrow_down and e.action.keydown
+                else viewer.reset_view()
+                if e.key == "Home" and e.action.keydown
+                else None
             )
         )
 
     # Load CLI files after UI is ready
-    if _cli_files['mzml']:
-        if viewer.load_mzml(_cli_files['mzml']):
+    if _cli_files["mzml"]:
+        if viewer.load_mzml(_cli_files["mzml"]):
             viewer.update_plot()
             viewer.update_tic_plot()
             # Show first spectrum in 1D browser
             if viewer.exp and viewer.exp.size() > 0:
                 viewer.show_spectrum_in_browser(0)
-    if _cli_files['featurexml']:
-        if viewer.load_featuremap(_cli_files['featurexml']):
+    if _cli_files["featurexml"]:
+        if viewer.load_featuremap(_cli_files["featurexml"]):
             viewer.update_plot()
-    if _cli_files['idxml']:
-        if viewer.load_idxml(_cli_files['idxml']):
+    if _cli_files["idxml"]:
+        if viewer.load_idxml(_cli_files["idxml"]):
             viewer.update_plot()
 
 
 @click.command()
-@click.argument('files', nargs=-1, type=click.Path(exists=True))
-@click.option('--port', '-p', default=8080, help='Port to run the server on')
-@click.option('--host', '-H', default='0.0.0.0', help='Host to bind to')
-@click.option('--open/--no-open', '-o/-n', default=True, help='Open browser automatically (default: open)')
-@click.option('--native', is_flag=True, default=False, help='Run as native desktop app (requires: pip install pywebview)')
+@click.argument("files", nargs=-1, type=click.Path(exists=True))
+@click.option("--port", "-p", default=8080, help="Port to run the server on")
+@click.option("--host", "-H", default="0.0.0.0", help="Host to bind to")
+@click.option("--open/--no-open", "-o/-n", default=True, help="Open browser automatically (default: open)")
+@click.option(
+    "--native", is_flag=True, default=False, help="Run as native desktop app (requires: pip install pywebview)"
+)
 def main(files, port, host, open, native):
     """
     pyopenms-viewer - Fast visualization of mass spectrometry data.
@@ -4434,22 +4653,22 @@ def main(files, port, host, open, native):
         path = Path(filepath)
         ext = path.suffix.lower()
 
-        if ext == '.mzml':
-            _cli_files['mzml'] = str(path)
+        if ext == ".mzml":
+            _cli_files["mzml"] = str(path)
             click.echo(f"Will load mzML: {path.name}")
-        elif ext == '.featurexml':
-            _cli_files['featurexml'] = str(path)
+        elif ext == ".featurexml":
+            _cli_files["featurexml"] = str(path)
             click.echo(f"Will load featureXML: {path.name}")
-        elif ext == '.idxml':
-            _cli_files['idxml'] = str(path)
+        elif ext == ".idxml":
+            _cli_files["idxml"] = str(path)
             click.echo(f"Will load idXML: {path.name}")
-        elif ext == '.xml':
+        elif ext == ".xml":
             name_lower = path.name.lower()
-            if 'feature' in name_lower:
-                _cli_files['featurexml'] = str(path)
+            if "feature" in name_lower:
+                _cli_files["featurexml"] = str(path)
                 click.echo(f"Will load as featureXML: {path.name}")
-            elif 'id' in name_lower:
-                _cli_files['idxml'] = str(path)
+            elif "id" in name_lower:
+                _cli_files["idxml"] = str(path)
                 click.echo(f"Will load as idXML: {path.name}")
             else:
                 click.echo(f"Unknown XML file type: {path.name} (skipping)")
@@ -4457,7 +4676,7 @@ def main(files, port, host, open, native):
             click.echo(f"Unknown file type: {path.name} (skipping)")
 
     if native:
-        click.echo(f"\nStarting native desktop app...")
+        click.echo("\nStarting native desktop app...")
     else:
         click.echo(f"\nStarting server at http://{host}:{port}")
         if open:
@@ -4465,7 +4684,7 @@ def main(files, port, host, open, native):
 
     # NiceGUI 3.x: Use root parameter for cleaner single-page app structure
     ui.run(
-        title='pyopenms-viewer',
+        title="pyopenms-viewer",
         host=host,
         port=port,
         reload=False,
