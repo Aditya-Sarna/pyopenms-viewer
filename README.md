@@ -135,12 +135,14 @@ uv run pyopenms-viewer [FILES] [OPTIONS]
 
 Options:
   -p, --port INTEGER     Port to run the server on (default: 8080)
-  -H, --host TEXT        Host to bind to (default: 0.0.0.0)
+  -H, --host TEXT        Host to bind to (default: 0.0.0.0, binds to all interfaces)
   -o, --open / -n, --no-open
                          Open browser automatically (default: open)
   --native               Run as native desktop app (requires pywebview)
   --help                 Show this message and exit
 ```
+
+> **Note**: The default host `0.0.0.0` allows access from any network interface. For local-only access, use `--host 127.0.0.1`.
 
 **Examples:**
 ```bash
@@ -175,7 +177,8 @@ uv run ruff format .
 - Restart your terminal after installing uv, or add it to your PATH manually
 
 **"Python 3.10+ required"**
-- Install a newer Python version from [python.org](https://www.python.org/downloads/) or use pyenv
+- Install a newer Python version from [python.org](https://www.python.org/downloads/)
+- Or use [pyenv](https://github.com/pyenv/pyenv) (a tool for managing multiple Python versions)
 
 **"Port 8080 already in use"**
 - Use a different port: `uv run pyopenms-viewer --port 3000`
