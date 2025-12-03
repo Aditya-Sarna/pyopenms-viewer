@@ -75,8 +75,25 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/**/*
-          generate_release_notes: true
+      - name: Create or update GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "Tag: $TAG"
+
+          # Ensure gh CLI is available; it is installed on GitHub-hosted runners
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh CLI not found; installing"
+            sudo apt-get update && sudo apt-get install -y gh
+          fi
+
+          # Create release if it doesn't exist; otherwise upload and overwrite assets
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release exists for $TAG, uploading assets with --clobber"
+            gh release upload "$TAG" artifacts/**/* --clobber || true
+          else
+            echo "Creating release for $TAG and uploading assets"
+            gh release create "$TAG" artifacts/**/* --generate-notes || true
+          fi
