@@ -408,7 +408,7 @@ def create_annotated_spectrum_plot(
     )
 
     fig.update_xaxes(range=[0, max(exp_mz) * 1.05] if len(exp_mz) > 0 else [0, 2000], showgrid=False)
-    fig.update_yaxes(range=[0, 110], showgrid=False)
+    fig.update_yaxes(range=[0, 110], showgrid=False, fixedrange=True)  # Fix y-axis to prevent panning
 
     return fig
 
@@ -1413,7 +1413,7 @@ class MzMLViewer:
                 margin={"l": 60, "r": 20, "t": 50, "b": 50},
                 showlegend=False,
                 xaxis={"showgrid": False},
-                yaxis={"showgrid": False},
+                yaxis={"showgrid": False, "fixedrange": True},  # Fix y-axis to prevent panning
             )
 
             fig.update_yaxes(range=y_range)
