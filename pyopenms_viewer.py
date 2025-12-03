@@ -36,6 +36,7 @@ if sys.stderr is None:
 
 import numpy as np
 import pandas as pd
+from scipy.signal import find_peaks
 
 # Set OpenMP threads for pyOpenMS to use all available cores
 os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count()))
@@ -590,6 +591,11 @@ class Viewer:
         self.spectrum_selected_measurement_idx = None  # Index of selected measurement for deletion/repositioning
         self.spectrum_dragging = False  # Whether we're in drag mode for creating/repositioning
         self.spectrum_zoom_range = None  # (xmin, xmax) to preserve zoom during measurement
+
+        # Peak annotation state
+        self.peak_annotations = {}  # Dict: spectrum_idx -> list of {"mz": float, "int": float, "label": str}
+        self.peak_annotation_mode = False  # Whether annotation mode is active (click to add/edit labels)
+        self.show_mz_labels = False  # Show m/z values as labels on all peaks
 
         # FAIMS UI elements
         self.faims_container = None  # Container for multiple peak maps
@@ -1502,6 +1508,9 @@ class Viewer:
         # Add any stored measurements for this spectrum
         self.add_spectrum_measurements_to_figure(fig, spectrum_idx, mz_array, int_array)
 
+        # Add peak annotations (custom labels and m/z labels)
+        self.add_peak_annotations_to_figure(fig, spectrum_idx, mz_array, int_array)
+
         # Add hover highlights and measurement preview
         self.add_spectrum_highlight_to_figure(fig, mz_array, int_array)
 
@@ -1850,6 +1859,134 @@ class Viewer:
                         y1=bracket_y,
                         line={"color": "cyan", "width": 4},
                     )
+
+    def add_peak_annotations_to_figure(
+        self, fig: go.Figure, spectrum_idx: int, mz_array: np.ndarray, int_array: np.ndarray
+    ):
+        """Add peak annotations (m/z labels and custom labels) to the spectrum figure."""
+        if len(mz_array) == 0:
+            return
+
+        max_int = float(int_array.max()) if len(int_array) > 0 else 1.0
+
+        # Get custom annotations for this spectrum
+        custom_annotations = self.peak_annotations.get(spectrum_idx, [])
+
+        # Convert intensity to display units
+        def to_display_y(intensity: float) -> float:
+            if self.spectrum_intensity_percent:
+                return (intensity / max_int) * 100
+            return intensity
+
+        # Add custom peak labels
+        for ann in custom_annotations:
+            mz, intensity, label = ann["mz"], ann["int"], ann["label"]
+            y_val = to_display_y(intensity)
+
+            # Add marker at the annotation position
+            fig.add_trace(
+                go.Scatter(
+                    x=[mz],
+                    y=[y_val],
+                    mode="markers",
+                    marker={"color": "#22cc88", "size": 8, "symbol": "diamond"},
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+            )
+
+            # Add the label text
+            display_label = label if label else f"{mz:.4f}"
+            fig.add_annotation(
+                x=mz,
+                y=y_val,
+                text=display_label,
+                showarrow=True,
+                arrowhead=0,
+                arrowsize=1,
+                arrowwidth=1,
+                arrowcolor="#22cc88",
+                ax=0,
+                ay=-25,
+                font={"color": "#22cc88", "size": 10},
+                bgcolor="rgba(0,0,0,0.5)",
+                borderpad=2,
+            )
+
+        # Add m/z labels to interesting peaks if enabled (but not if we already have custom labels there)
+        if self.show_mz_labels:
+            # Get m/z values that already have custom annotations
+            annotated_mz = {ann["mz"] for ann in custom_annotations}
+
+            # Use scipy.signal.find_peaks to find interesting peaks:
+            # - prominence: peak must stand out from surrounding baseline (5% of max intensity)
+            # - distance: minimum separation between peaks (in array indices)
+            min_prominence = max_int * 0.05  # 5% of max intensity
+            peak_indices, properties = find_peaks(
+                int_array,
+                prominence=min_prominence,
+                distance=max(1, len(mz_array) // 50),  # At least 2% spacing
+            )
+
+            # If find_peaks returns too many or too few, fall back to top N by prominence
+            if len(peak_indices) > 15:
+                # Sort by prominence and keep top 15
+                prominences = properties.get("prominences", int_array[peak_indices])
+                sorted_idx = np.argsort(prominences)[-15:]
+                peak_indices = peak_indices[sorted_idx]
+            elif len(peak_indices) == 0:
+                # Fallback: just use top 10 by intensity
+                peak_indices = np.argsort(int_array)[-10:]
+
+            for idx in peak_indices:
+                mz = float(mz_array[idx])
+                # Skip if this peak already has a custom annotation
+                if any(abs(mz - ann_mz) < 0.01 for ann_mz in annotated_mz):
+                    continue
+
+                intensity = float(int_array[idx])
+                y_val = to_display_y(intensity)
+
+                fig.add_annotation(
+                    x=mz,
+                    y=y_val,
+                    text=f"{mz:.2f}",
+                    showarrow=False,
+                    yshift=10,
+                    font={"color": "#888", "size": 9},
+                )
+
+    def add_or_edit_peak_annotation(self, spectrum_idx: int, mz: float, intensity: float, label: str | None = None):
+        """Add or edit a peak annotation. If label is None, shows m/z value."""
+        if spectrum_idx not in self.peak_annotations:
+            self.peak_annotations[spectrum_idx] = []
+
+        annotations = self.peak_annotations[spectrum_idx]
+
+        # Check if annotation already exists at this m/z (within tolerance)
+        for ann in annotations:
+            if abs(ann["mz"] - mz) < 0.01:
+                # Update existing annotation
+                ann["label"] = label if label is not None else f"{mz:.4f}"
+                return
+
+        # Add new annotation
+        annotations.append({"mz": mz, "int": intensity, "label": label if label is not None else f"{mz:.4f}"})
+
+    def remove_peak_annotation(self, spectrum_idx: int, mz: float):
+        """Remove a peak annotation at the given m/z."""
+        if spectrum_idx not in self.peak_annotations:
+            return
+
+        annotations = self.peak_annotations[spectrum_idx]
+        self.peak_annotations[spectrum_idx] = [ann for ann in annotations if abs(ann["mz"] - mz) >= 0.01]
+
+    def clear_peak_annotations(self, spectrum_idx: int | None = None):
+        """Clear peak annotations. If spectrum_idx is None, clears all annotations."""
+        if spectrum_idx is None:
+            self.peak_annotations.clear()
+        elif spectrum_idx in self.peak_annotations:
+            del self.peak_annotations[spectrum_idx]
 
     def navigate_spectrum_by_ms_level(self, direction: int, ms_level: int):
         """Navigate to prev/next spectrum of specific MS level."""
@@ -4810,13 +4947,20 @@ def create_ui():
 
                     ui.label("|").classes("mx-1 text-gray-600")
 
-                    # Measurement mode toggle
+                    # Measurement mode toggle (needs annotation_btn reference, defined below)
+                    annotation_btn = None  # Forward declaration
+
                     def toggle_measure_mode():
                         viewer.spectrum_measure_mode = not viewer.spectrum_measure_mode
                         viewer.spectrum_measure_start = None  # Reset any pending measurement
                         viewer.spectrum_hover_peak = None  # Clear hover highlight
                         if not viewer.spectrum_measure_mode:
                             viewer.spectrum_zoom_range = None  # Clear saved zoom when leaving measurement mode
+                        # Disable annotation mode when measure mode is active
+                        if viewer.spectrum_measure_mode and viewer.peak_annotation_mode:
+                            viewer.peak_annotation_mode = False
+                            if annotation_btn:
+                                annotation_btn.props("color=grey")
                         measure_btn.props(f"color={'yellow' if viewer.spectrum_measure_mode else 'grey'}")
                         if viewer.spectrum_measure_mode:
                             ui.notify("Measure mode ON - click two peaks to measure Δm/z", type="info")
@@ -4834,6 +4978,46 @@ def create_ui():
                         "Clear Δ",
                         on_click=lambda: viewer.clear_spectrum_measurement(),
                     ).props("dense size=sm color=grey").tooltip("Clear measurements for this spectrum")
+
+                    ui.label("|").classes("mx-1 text-gray-600")
+
+                    # Annotation mode toggle
+                    def toggle_annotation_mode():
+                        viewer.peak_annotation_mode = not viewer.peak_annotation_mode
+                        # Disable measure mode when annotation mode is active
+                        if viewer.peak_annotation_mode and viewer.spectrum_measure_mode:
+                            viewer.spectrum_measure_mode = False
+                            viewer.spectrum_measure_start = None
+                            measure_btn.props("color=grey")
+                        annotation_btn.props(f"color={'green' if viewer.peak_annotation_mode else 'grey'}")
+                        if viewer.peak_annotation_mode:
+                            ui.notify("Label mode ON - click peaks to add labels", type="info")
+                        else:
+                            ui.notify("Label mode OFF", type="info")
+
+                    annotation_btn = ui.button("🏷️ Label", on_click=toggle_annotation_mode).props(
+                        "dense size=sm color=grey"
+                    ).tooltip("Toggle label mode - click peaks to add/edit custom labels")
+
+                    # Show m/z labels on all peaks toggle
+                    def toggle_mz_labels(e):
+                        viewer.show_mz_labels = e.value
+                        if viewer.selected_spectrum_idx is not None:
+                            viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+
+                    ui.checkbox("m/z", value=False, on_change=toggle_mz_labels).props(
+                        "dense size=sm color=grey"
+                    ).classes("text-xs").tooltip("Show m/z values on top peaks")
+
+                    def clear_annotations():
+                        if viewer.selected_spectrum_idx is not None:
+                            viewer.clear_peak_annotations(viewer.selected_spectrum_idx)
+                            viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+                            ui.notify("Annotations cleared", type="info")
+
+                    ui.button("Clear 🏷️", on_click=clear_annotations).props(
+                        "dense size=sm color=grey"
+                    ).tooltip("Clear all labels for this spectrum")
 
                     ui.label("|").classes("mx-1 text-gray-600")
                     viewer.spectrum_browser_info = ui.label("Click TIC to select spectrum").classes(
@@ -4888,6 +5072,60 @@ def create_ui():
                         if viewer.spectrum_selected_measurement_idx is not None:
                             viewer.spectrum_selected_measurement_idx = None
                             viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+
+                        # Handle annotation mode - click to add/edit peak labels
+                        if viewer.peak_annotation_mode:
+                            # Snap to nearest peak
+                            snapped = viewer.snap_to_peak(clicked_mz, mz_array, int_array, clicked_y)
+                            if snapped is None:
+                                ui.notify("No peak found near click position", type="warning")
+                                return
+
+                            snapped_mz, snapped_int = snapped
+                            spectrum_idx = viewer.selected_spectrum_idx
+
+                            # Check if annotation already exists at this m/z
+                            existing_label = ""
+                            if spectrum_idx in viewer.peak_annotations:
+                                for ann in viewer.peak_annotations[spectrum_idx]:
+                                    if abs(ann["mz"] - snapped_mz) < 0.01:
+                                        existing_label = ann["label"]
+                                        break
+
+                            # Open dialog to edit annotation
+                            with ui.dialog() as dialog, ui.card().classes("min-w-[300px]"):
+                                ui.label("Peak Annotation").classes("text-lg font-bold")
+                                ui.label(f"m/z: {snapped_mz:.4f}").classes("text-sm text-gray-400")
+
+                                label_input = ui.input(
+                                    "Label",
+                                    value=existing_label,
+                                    placeholder=f"{snapped_mz:.4f}",
+                                ).classes("w-full")
+
+                                with ui.row().classes("w-full justify-end gap-2 mt-4"):
+
+                                    def delete_annotation(mz=snapped_mz, idx=spectrum_idx):
+                                        viewer.remove_peak_annotation(idx, mz)
+                                        dialog.close()
+                                        viewer.show_spectrum_in_browser(idx)
+                                        ui.notify("Annotation removed", type="info")
+
+                                    def save_annotation(mz=snapped_mz, intensity=snapped_int, idx=spectrum_idx):
+                                        label = label_input.value.strip()
+                                        viewer.add_or_edit_peak_annotation(idx, mz, intensity, label if label else None)
+                                        dialog.close()
+                                        viewer.show_spectrum_in_browser(idx)
+                                        ui.notify("Annotation saved", type="positive")
+
+                                    if existing_label:
+                                        ui.button("Delete", on_click=delete_annotation, color="red").props("flat")
+
+                                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                                    ui.button("Save", on_click=save_annotation, color="primary")
+
+                            dialog.open()
+                            return
 
                         # Only handle peak measurement when measurement mode is active
                         if not viewer.spectrum_measure_mode:
