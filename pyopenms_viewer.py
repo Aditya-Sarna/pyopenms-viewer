@@ -42,6 +42,7 @@ import plotly.graph_objects as go
 
 # NiceGUI for the web interface
 from nicegui import run, ui
+from nicegui.events import MouseEventArguments
 
 # PIL for drawing overlays and axes
 from PIL import Image, ImageDraw, ImageFont
@@ -3831,15 +3832,115 @@ def create_ui():
             with ui.row().classes("w-full items-start gap-2"):
                 # Peak map image with mouse handlers
                 with ui.column().classes("flex-none"):
+                    # Drag state for selection rectangle
+                    drag_state = {"dragging": False, "start_x": 0, "start_y": 0}
+
+                    def on_peakmap_mouse(e: MouseEventArguments):
+                        """Handle mouse events on the peakmap for drag-to-zoom with selection rectangle."""
+                        if e.type == "mousedown":
+                            # Only start drag if within plot area
+                            plot_x = e.image_x - viewer.margin_left
+                            plot_y = e.image_y - viewer.margin_top
+                            if 0 <= plot_x <= viewer.plot_width and 0 <= plot_y <= viewer.plot_height:
+                                drag_state["dragging"] = True
+                                drag_state["start_x"] = e.image_x
+                                drag_state["start_y"] = e.image_y
+
+                        elif e.type == "mousemove":
+                            # Update coordinate display
+                            try:
+                                viewer.update_coord_display(e.image_x, e.image_y)
+                            except Exception:
+                                pass
+
+                            # Draw selection rectangle if dragging
+                            if drag_state["dragging"]:
+                                x = min(drag_state["start_x"], e.image_x)
+                                y = min(drag_state["start_y"], e.image_y)
+                                w = abs(e.image_x - drag_state["start_x"])
+                                h = abs(e.image_y - drag_state["start_y"])
+                                viewer.image_element.content = f"""
+                                    <rect x="{x}" y="{y}" width="{w}" height="{h}"
+                                          fill="rgba(0, 200, 255, 0.15)"
+                                          stroke="cyan" stroke-width="2" stroke-dasharray="5,5"/>
+                                """
+
+                        elif e.type == "mouseup":
+                            # Clear selection rectangle
+                            viewer.image_element.content = ""
+
+                            if drag_state["dragging"]:
+                                drag_state["dragging"] = False
+                                end_x = e.image_x
+                                end_y = e.image_y
+
+                                # Calculate selection in plot coordinates
+                                start_plot_x = drag_state["start_x"] - viewer.margin_left
+                                start_plot_y = drag_state["start_y"] - viewer.margin_top
+                                end_plot_x = end_x - viewer.margin_left
+                                end_plot_y = end_y - viewer.margin_top
+
+                                # Ensure within bounds
+                                start_plot_x = max(0, min(viewer.plot_width, start_plot_x))
+                                start_plot_y = max(0, min(viewer.plot_height, start_plot_y))
+                                end_plot_x = max(0, min(viewer.plot_width, end_plot_x))
+                                end_plot_y = max(0, min(viewer.plot_height, end_plot_y))
+
+                                # Only zoom if dragged a meaningful distance (>10 pixels)
+                                dx = abs(end_plot_x - start_plot_x)
+                                dy = abs(end_plot_y - start_plot_y)
+
+                                if dx > 10 and dy > 10:
+                                    # Save current state to zoom history before changing
+                                    viewer.push_zoom_history()
+
+                                    # Convert to data coordinates
+                                    rt_range = viewer.view_rt_max - viewer.view_rt_min
+                                    mz_range = viewer.view_mz_max - viewer.view_mz_min
+
+                                    x1_frac = min(start_plot_x, end_plot_x) / viewer.plot_width
+                                    x2_frac = max(start_plot_x, end_plot_x) / viewer.plot_width
+                                    y1_frac = min(start_plot_y, end_plot_y) / viewer.plot_height
+                                    y2_frac = max(start_plot_y, end_plot_y) / viewer.plot_height
+
+                                    if viewer.swap_axes:
+                                        # swap_axes=True: m/z on x-axis, RT on y-axis
+                                        new_mz_min = viewer.view_mz_min + x1_frac * mz_range
+                                        new_mz_max = viewer.view_mz_min + x2_frac * mz_range
+                                        # Y is inverted (top = high RT)
+                                        new_rt_max = viewer.view_rt_max - y1_frac * rt_range
+                                        new_rt_min = viewer.view_rt_max - y2_frac * rt_range
+                                    else:
+                                        # swap_axes=False: RT on x-axis, m/z on y-axis
+                                        new_rt_min = viewer.view_rt_min + x1_frac * rt_range
+                                        new_rt_max = viewer.view_rt_min + x2_frac * rt_range
+                                        # Y is inverted (top = high m/z)
+                                        new_mz_max = viewer.view_mz_max - y1_frac * mz_range
+                                        new_mz_min = viewer.view_mz_max - y2_frac * mz_range
+
+                                    viewer.view_rt_min = new_rt_min
+                                    viewer.view_rt_max = new_rt_max
+                                    viewer.view_mz_min = new_mz_min
+                                    viewer.view_mz_max = new_mz_max
+
+                                    # Save new state to zoom history
+                                    viewer.push_zoom_history()
+                                    viewer.update_plot()
+
                     viewer.image_element = (
-                        ui.image()
+                        ui.interactive_image(
+                            on_mouse=on_peakmap_mouse,
+                            events=["mousedown", "mousemove", "mouseup"],
+                            cross=False,
+                        )
                         .classes("w-full")
                         .style(
-                            f"width: {viewer.canvas_width}px; height: {viewer.canvas_height}px; background: #141419; cursor: crosshair;"
+                            f"width: {viewer.canvas_width}px; height: {viewer.canvas_height}px; "
+                            f"background: #141419; cursor: crosshair;"
                         )
                     )
 
-                    # Mouse wheel zoom handler
+                    # Mouse wheel zoom handler (separate from interactive_image events)
                     def on_wheel(e):
                         try:
                             # Get mouse position relative to image
@@ -3862,101 +3963,17 @@ def create_ui():
 
                     viewer.image_element.on("wheel.prevent", on_wheel)
 
-                    # Drag to select region for zoom (no continuous updates - just on release)
-                    drag_state = {"dragging": False, "start_x": 0, "start_y": 0}
-
-                    def on_mousedown(e):
-                        offset_x = e.args.get("offsetX", 0)
-                        offset_y = e.args.get("offsetY", 0)
-                        # Only start drag if within plot area
-                        plot_x = offset_x - viewer.margin_left
-                        plot_y = offset_y - viewer.margin_top
-                        if 0 <= plot_x <= viewer.plot_width and 0 <= plot_y <= viewer.plot_height:
-                            drag_state["dragging"] = True
-                            drag_state["start_x"] = offset_x
-                            drag_state["start_y"] = offset_y
-
-                    def on_mouseup(e):
-                        if drag_state["dragging"]:
-                            drag_state["dragging"] = False
-                            end_x = e.args.get("offsetX", 0)
-                            end_y = e.args.get("offsetY", 0)
-
-                            # Calculate selection in plot coordinates
-                            start_plot_x = drag_state["start_x"] - viewer.margin_left
-                            start_plot_y = drag_state["start_y"] - viewer.margin_top
-                            end_plot_x = end_x - viewer.margin_left
-                            end_plot_y = end_y - viewer.margin_top
-
-                            # Ensure within bounds
-                            start_plot_x = max(0, min(viewer.plot_width, start_plot_x))
-                            start_plot_y = max(0, min(viewer.plot_height, start_plot_y))
-                            end_plot_x = max(0, min(viewer.plot_width, end_plot_x))
-                            end_plot_y = max(0, min(viewer.plot_height, end_plot_y))
-
-                            # Only zoom if dragged a meaningful distance (>10 pixels)
-                            dx = abs(end_plot_x - start_plot_x)
-                            dy = abs(end_plot_y - start_plot_y)
-
-                            if dx > 10 and dy > 10:
-                                # Save current state to zoom history before changing
-                                viewer.push_zoom_history()
-
-                                # Convert to data coordinates
-                                rt_range = viewer.view_rt_max - viewer.view_rt_min
-                                mz_range = viewer.view_mz_max - viewer.view_mz_min
-
-                                x1_frac = min(start_plot_x, end_plot_x) / viewer.plot_width
-                                x2_frac = max(start_plot_x, end_plot_x) / viewer.plot_width
-                                y1_frac = min(start_plot_y, end_plot_y) / viewer.plot_height
-                                y2_frac = max(start_plot_y, end_plot_y) / viewer.plot_height
-
-                                if viewer.swap_axes:
-                                    # swap_axes=True: m/z on x-axis, RT on y-axis
-                                    new_mz_min = viewer.view_mz_min + x1_frac * mz_range
-                                    new_mz_max = viewer.view_mz_min + x2_frac * mz_range
-                                    # Y is inverted (top = high RT)
-                                    new_rt_max = viewer.view_rt_max - y1_frac * rt_range
-                                    new_rt_min = viewer.view_rt_max - y2_frac * rt_range
-                                else:
-                                    # swap_axes=False: RT on x-axis, m/z on y-axis
-                                    new_rt_min = viewer.view_rt_min + x1_frac * rt_range
-                                    new_rt_max = viewer.view_rt_min + x2_frac * rt_range
-                                    # Y is inverted (top = high m/z)
-                                    new_mz_max = viewer.view_mz_max - y1_frac * mz_range
-                                    new_mz_min = viewer.view_mz_max - y2_frac * mz_range
-
-                                viewer.view_rt_min = new_rt_min
-                                viewer.view_rt_max = new_rt_max
-                                viewer.view_mz_min = new_mz_min
-                                viewer.view_mz_max = new_mz_max
-
-                                # Save new state to zoom history
-                                viewer.push_zoom_history()
-                                viewer.update_plot()
-
                     def on_dblclick(e):
                         viewer.reset_view()
 
-                    # Mousemove handler for coordinate display
-                    def on_mousemove(e):
-                        try:
-                            offset_x = e.args.get("offsetX", 0)
-                            offset_y = e.args.get("offsetY", 0)
-                            viewer.update_coord_display(offset_x, offset_y)
-                        except Exception:
-                            pass
-
-                    def on_mouseleave_coord(e):
+                    def on_mouseleave(e):
                         drag_state["dragging"] = False
+                        viewer.image_element.content = ""  # Clear any selection rectangle
                         if viewer.coord_label:
                             viewer.coord_label.set_text("RT: --  m/z: --")
 
-                    viewer.image_element.on("mousedown", on_mousedown)
-                    viewer.image_element.on("mouseup", on_mouseup)
-                    viewer.image_element.on("mouseleave", on_mouseleave_coord)
-                    viewer.image_element.on("mousemove", on_mousemove)
                     viewer.image_element.on("dblclick", on_dblclick)
+                    viewer.image_element.on("mouseleave", on_mouseleave)
 
                     # 3D View Container (below 2D peakmap, hidden by default)
                     viewer.scene_3d_container = ui.column().classes("w-full mt-1")
