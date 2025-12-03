@@ -4047,8 +4047,19 @@ def create_ui():
             with ui.row().classes("w-full items-start gap-2"):
                 # Peak map image with mouse handlers
                 with ui.column().classes("flex-none"):
-                    # Drag state for selection rectangle and measurement tool
-                    drag_state = {"dragging": False, "measuring": False, "start_x": 0, "start_y": 0}
+                    # Drag state for selection rectangle, measurement tool, and panning
+                    drag_state = {
+                        "dragging": False,
+                        "measuring": False,
+                        "panning": False,
+                        "start_x": 0,
+                        "start_y": 0,
+                        # Initial view bounds for panning (stored on mousedown)
+                        "pan_rt_min": 0,
+                        "pan_rt_max": 0,
+                        "pan_mz_min": 0,
+                        "pan_mz_max": 0,
+                    }
 
                     def pixel_to_data(px: float, py: float) -> tuple[float, float]:
                         """Convert pixel coordinates to (rt, mz) respecting swap_axes."""
@@ -4073,7 +4084,7 @@ def create_ui():
                         return rt, mz
 
                     def on_peakmap_mouse(e: MouseEventArguments):
-                        """Handle mouse events on the peakmap for drag-to-zoom and measurement tool."""
+                        """Handle mouse events on the peakmap for drag-to-zoom, measurement, and panning."""
                         if e.type == "mousedown":
                             # Only start drag if within plot area
                             plot_x = e.image_x - viewer.margin_left
@@ -4081,8 +4092,15 @@ def create_ui():
                             if 0 <= plot_x <= viewer.plot_width and 0 <= plot_y <= viewer.plot_height:
                                 drag_state["dragging"] = True
                                 drag_state["measuring"] = e.shift  # Shift+drag = measurement mode
+                                drag_state["panning"] = e.ctrl  # Ctrl+drag = panning mode
                                 drag_state["start_x"] = e.image_x
                                 drag_state["start_y"] = e.image_y
+                                # Store initial view bounds for panning
+                                if e.ctrl:
+                                    drag_state["pan_rt_min"] = viewer.view_rt_min
+                                    drag_state["pan_rt_max"] = viewer.view_rt_max
+                                    drag_state["pan_mz_min"] = viewer.view_mz_min
+                                    drag_state["pan_mz_max"] = viewer.view_mz_max
 
                         elif e.type == "mousemove":
                             # Update coordinate display
@@ -4129,6 +4147,67 @@ def create_ui():
                                         <text x="{mid_x}" y="{mid_y + label_offset + 28}"
                                               fill="yellow" font-size="12" font-family="monospace">{mz_text}</text>
                                     """
+                                elif drag_state["panning"]:
+                                    # Panning mode: calculate pixel delta and shift view
+                                    delta_px = e.image_x - drag_state["start_x"]
+                                    delta_py = e.image_y - drag_state["start_y"]
+
+                                    # Convert pixel delta to data delta
+                                    rt_range = drag_state["pan_rt_max"] - drag_state["pan_rt_min"]
+                                    mz_range = drag_state["pan_mz_max"] - drag_state["pan_mz_min"]
+
+                                    if viewer.swap_axes:
+                                        # swap_axes=True: m/z on x-axis, RT on y-axis
+                                        delta_mz = -(delta_px / viewer.plot_width) * mz_range
+                                        delta_rt = (delta_py / viewer.plot_height) * rt_range  # Y inverted
+                                    else:
+                                        # swap_axes=False: RT on x-axis, m/z on y-axis
+                                        delta_rt = -(delta_px / viewer.plot_width) * rt_range
+                                        delta_mz = (delta_py / viewer.plot_height) * mz_range  # Y inverted
+
+                                    # Calculate new bounds with clamping to data limits
+                                    new_rt_min = drag_state["pan_rt_min"] + delta_rt
+                                    new_rt_max = drag_state["pan_rt_max"] + delta_rt
+                                    new_mz_min = drag_state["pan_mz_min"] + delta_mz
+                                    new_mz_max = drag_state["pan_mz_max"] + delta_mz
+
+                                    # Clamp to data limits (don't pan beyond data)
+                                    if new_rt_min < viewer.rt_min:
+                                        shift = viewer.rt_min - new_rt_min
+                                        new_rt_min += shift
+                                        new_rt_max += shift
+                                    if new_rt_max > viewer.rt_max:
+                                        shift = new_rt_max - viewer.rt_max
+                                        new_rt_min -= shift
+                                        new_rt_max -= shift
+                                    if new_mz_min < viewer.mz_min:
+                                        shift = viewer.mz_min - new_mz_min
+                                        new_mz_min += shift
+                                        new_mz_max += shift
+                                    if new_mz_max > viewer.mz_max:
+                                        shift = new_mz_max - viewer.mz_max
+                                        new_mz_min -= shift
+                                        new_mz_max -= shift
+
+                                    # Update view bounds
+                                    viewer.view_rt_min = new_rt_min
+                                    viewer.view_rt_max = new_rt_max
+                                    viewer.view_mz_min = new_mz_min
+                                    viewer.view_mz_max = new_mz_max
+
+                                    # Update plot (redraw peakmap)
+                                    viewer.update_plot()
+
+                                    # Show panning cursor indicator
+                                    cx, cy = e.image_x, e.image_y
+                                    viewer.image_element.content = f"""
+                                        <circle cx="{cx}" cy="{cy}" r="8" fill="none"
+                                                stroke="orange" stroke-width="2"/>
+                                        <line x1="{cx - 12}" y1="{cy}" x2="{cx + 12}" y2="{cy}"
+                                              stroke="orange" stroke-width="2"/>
+                                        <line x1="{cx}" y1="{cy - 12}" x2="{cx}" y2="{cy + 12}"
+                                              stroke="orange" stroke-width="2"/>
+                                    """
                                 else:
                                     # Zoom mode: draw selection rectangle
                                     x = min(drag_state["start_x"], e.image_x)
@@ -4147,11 +4226,13 @@ def create_ui():
 
                             if drag_state["dragging"]:
                                 was_measuring = drag_state["measuring"]
+                                was_panning = drag_state["panning"]
                                 drag_state["dragging"] = False
                                 drag_state["measuring"] = False
+                                drag_state["panning"] = False
 
-                                # Skip zoom if we were measuring
-                                if was_measuring:
+                                # Skip zoom if we were measuring or panning
+                                if was_measuring or was_panning:
                                     return
 
                                 end_x = e.image_x
@@ -4970,14 +5051,17 @@ def create_ui():
                         ui.label("MS2 spectrum marker (red)")
 
                 with ui.column():
-                    ui.label("Keyboard Shortcuts:").classes("font-semibold")
+                    ui.label("Keyboard & Mouse:").classes("font-semibold")
                     ui.markdown("""
-| Key | Action |
-|-----|--------|
+| Input | Action |
+|-------|--------|
 | `+` / `=` | Zoom In |
 | `-` | Zoom Out |
 | `Arrow Keys` | Pan |
 | `Home` | Reset View |
+| `Drag` | Zoom to selection |
+| `Shift+Drag` | Measure distance |
+| `Ctrl+Drag` | Pan (grab & move) |
                     """)
 
         # Keyboard handlers
