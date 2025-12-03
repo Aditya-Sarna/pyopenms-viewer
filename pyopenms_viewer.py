@@ -1571,14 +1571,14 @@ class MzMLViewer:
             # Draw horizontal bracket at height slightly above the higher peak, capped at 90%
             bracket_y = min(max(y1, y2) * 1.1, max_bracket)
 
-            # Horizontal line between the two m/z values
+            # Horizontal line between the two m/z values (orange works in light/dark)
             fig.add_shape(
                 type="line",
                 x0=mz1,
                 y0=bracket_y,
                 x1=mz2,
                 y1=bracket_y,
-                line={"color": "yellow", "width": 2},
+                line={"color": "#ff8800", "width": 2},
             )
 
             # Vertical lines down to each peak
@@ -1588,7 +1588,7 @@ class MzMLViewer:
                 y0=y1,
                 x1=mz1,
                 y1=bracket_y,
-                line={"color": "yellow", "width": 1, "dash": "dot"},
+                line={"color": "#ff8800", "width": 1, "dash": "dot"},
             )
             fig.add_shape(
                 type="line",
@@ -1596,22 +1596,22 @@ class MzMLViewer:
                 y0=y2,
                 x1=mz2,
                 y1=bracket_y,
-                line={"color": "yellow", "width": 1, "dash": "dot"},
+                line={"color": "#ff8800", "width": 1, "dash": "dot"},
             )
 
             # Calculate delta m/z
             delta_mz = abs(mz2 - mz1)
             mid_mz = (mz1 + mz2) / 2
 
-            # Add annotation with delta m/z
+            # Add annotation with delta m/z (white text on dark bg works in light/dark)
             fig.add_annotation(
                 x=mid_mz,
                 y=bracket_y,
                 text=f"Δ{delta_mz:.4f}",
                 showarrow=False,
                 yshift=12,
-                font={"color": "yellow", "size": 11},
-                bgcolor="rgba(0,0,0,0.7)",
+                font={"color": "white", "size": 11},
+                bgcolor="rgba(50,50,50,0.85)",
                 borderpad=2,
             )
 
@@ -1697,13 +1697,13 @@ class MzMLViewer:
             else:
                 start_y = start_int
 
-            # Small yellow circle marker for the locked-in start point
+            # Orange circle marker for the locked-in start point (works in light/dark)
             fig.add_trace(
                 go.Scatter(
                     x=[start_mz],
                     y=[start_y],
                     mode="markers",
-                    marker={"color": "yellow", "size": 10, "symbol": "circle", "line": {"width": 1, "color": "black"}},
+                    marker={"color": "#ff8800", "size": 10, "symbol": "circle", "line": {"width": 1, "color": "#333"}},
                     hoverinfo="skip",
                     showlegend=False,
                 )
@@ -1718,8 +1718,8 @@ class MzMLViewer:
                 hover_y = hover_int
 
             # Add a highlighted ring around the hovered peak
-            # Yellow in measure mode, cyan otherwise
-            highlight_color = "yellow" if self.spectrum_measure_mode else "cyan"
+            # Orange in measure mode, dark blue otherwise (works in light/dark)
+            highlight_color = "#ff8800" if self.spectrum_measure_mode else "#0077cc"
             fig.add_trace(
                 go.Scatter(
                     x=[hover_mz],
@@ -1746,14 +1746,14 @@ class MzMLViewer:
 
             bracket_y = min(max(y1, y2) * 1.1, max_bracket)
 
-            # Preview horizontal line (dashed, semi-transparent)
+            # Preview horizontal line (dashed, semi-transparent orange)
             fig.add_shape(
                 type="line",
                 x0=start_mz,
                 y0=bracket_y,
                 x1=hover_mz,
                 y1=bracket_y,
-                line={"color": "rgba(255, 255, 0, 0.5)", "width": 2, "dash": "dash"},
+                line={"color": "rgba(255, 136, 0, 0.6)", "width": 2, "dash": "dash"},
             )
 
             # Preview vertical connectors
@@ -1763,7 +1763,7 @@ class MzMLViewer:
                 y0=y1,
                 x1=start_mz,
                 y1=bracket_y,
-                line={"color": "rgba(255, 255, 0, 0.5)", "width": 1, "dash": "dot"},
+                line={"color": "rgba(255, 136, 0, 0.6)", "width": 1, "dash": "dot"},
             )
             fig.add_shape(
                 type="line",
@@ -1771,10 +1771,10 @@ class MzMLViewer:
                 y0=y2,
                 x1=hover_mz,
                 y1=bracket_y,
-                line={"color": "rgba(255, 255, 0, 0.5)", "width": 1, "dash": "dot"},
+                line={"color": "rgba(255, 136, 0, 0.6)", "width": 1, "dash": "dot"},
             )
 
-            # Preview delta annotation
+            # Preview delta annotation (white text on dark bg works in light/dark)
             delta_mz = abs(hover_mz - start_mz)
             mid_mz = (start_mz + hover_mz) / 2
             fig.add_annotation(
@@ -1783,8 +1783,8 @@ class MzMLViewer:
                 text=f"Δ{delta_mz:.4f}",
                 showarrow=False,
                 yshift=12,
-                font={"color": "rgba(255, 255, 0, 0.7)", "size": 11},
-                bgcolor="rgba(0,0,0,0.5)",
+                font={"color": "white", "size": 11},
+                bgcolor="rgba(50,50,50,0.7)",
                 borderpad=2,
             )
 
