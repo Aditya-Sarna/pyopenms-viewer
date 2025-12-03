@@ -395,20 +395,34 @@ def create_annotated_spectrum_plot(
         x=precursor_mz, line_dash="dash", line_color="orange", annotation_text=f"Precursor ({precursor_mz:.2f})"
     )
 
-    # Update layout
+    # Update layout - use transparent backgrounds for light/dark mode compatibility
     fig.update_layout(
-        title={"text": f"MS2 Spectrum: {sequence_str} (z={charge}+)", "font": {"size": 14}},
+        title={"text": f"MS2 Spectrum: {sequence_str} (z={charge}+)", "font": {"size": 14, "color": "#888"}},
         xaxis_title="m/z",
         yaxis_title="Relative Intensity (%)",
-        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",  # Transparent outer background
+        plot_bgcolor="rgba(0,0,0,0)",  # Transparent plot area
         height=400,
         margin={"l": 60, "r": 20, "t": 50, "b": 50},
         showlegend=True,
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1, "font": {"size": 10}},
+        modebar={"remove": ["lasso2d", "select2d"]},  # Remove lasso and box select tools
+        font={"color": "#888"},  # Gray text works on both light and dark
     )
 
-    fig.update_xaxes(range=[0, max(exp_mz) * 1.05] if len(exp_mz) > 0 else [0, 2000], showgrid=False)
-    fig.update_yaxes(range=[0, 110], showgrid=False, fixedrange=True)  # Fix y-axis to prevent panning
+    fig.update_xaxes(
+        range=[0, max(exp_mz) * 1.05] if len(exp_mz) > 0 else [0, 2000],
+        showgrid=False,
+        linecolor="#888",
+        tickcolor="#888",
+    )
+    fig.update_yaxes(
+        range=[0, 110],
+        showgrid=False,
+        fixedrange=True,
+        linecolor="#888",
+        tickcolor="#888",
+    )
 
     return fig
 
@@ -1404,19 +1418,22 @@ class MzMLViewer:
                     )
                     title += f" | Precursor: {prec_mz:.4f}"
 
+            # Use transparent backgrounds for light/dark mode compatibility
             fig.update_layout(
-                title={"text": title, "font": {"size": 14}},
+                title={"text": title, "font": {"size": 14, "color": "#888"}},
                 xaxis_title="m/z",
                 yaxis_title=y_title,
-                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",  # Transparent outer background
+                plot_bgcolor="rgba(0,0,0,0)",  # Transparent plot area
                 height=350,
                 margin={"l": 60, "r": 20, "t": 50, "b": 50},
                 showlegend=False,
-                xaxis={"showgrid": False},
-                yaxis={"showgrid": False, "fixedrange": True},  # Fix y-axis to prevent panning
+                modebar={"remove": ["lasso2d", "select2d"]},  # Remove lasso and box select tools
+                font={"color": "#888"},  # Gray text works on both light and dark
             )
 
-            fig.update_yaxes(range=y_range)
+            fig.update_xaxes(showgrid=False, linecolor="#888", tickcolor="#888")
+            fig.update_yaxes(range=y_range, showgrid=False, fixedrange=True, linecolor="#888", tickcolor="#888")
 
             # Update info label
             if self.spectrum_browser_info is not None:
