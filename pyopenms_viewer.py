@@ -21,10 +21,18 @@ import base64
 import io
 import math
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
+
+# Fix for PyInstaller windowed mode: sys.stdout/stderr are None which breaks uvicorn's
+# logging formatter that calls .isatty(). Redirect to devnull before importing uvicorn.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 
 import numpy as np
 import pandas as pd
