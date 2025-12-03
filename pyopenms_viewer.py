@@ -1616,15 +1616,14 @@ class Viewer:
             delta_mz = abs(mz2 - mz1)
             mid_mz = (mz1 + mz2) / 2
 
-            # Add annotation with delta m/z (white text on dark bg works in light/dark)
+            # Add annotation with delta m/z
             fig.add_annotation(
                 x=mid_mz,
                 y=bracket_y,
                 text=f"Δ{delta_mz:.4f}",
                 showarrow=False,
                 yshift=12,
-                font={"color": "white", "size": 11},
-                bgcolor="rgba(50,50,50,0.85)",
+                font={"color": "#ff8800", "size": 11},
                 borderpad=2,
             )
 
@@ -1787,7 +1786,7 @@ class Viewer:
                 line={"color": "rgba(255, 136, 0, 0.6)", "width": 1, "dash": "dot"},
             )
 
-            # Preview delta annotation (white text on dark bg works in light/dark)
+            # Preview delta annotation
             delta_mz = abs(hover_mz - start_mz)
             mid_mz = (start_mz + hover_mz) / 2
             fig.add_annotation(
@@ -1796,8 +1795,7 @@ class Viewer:
                 text=f"Δ{delta_mz:.4f}",
                 showarrow=False,
                 yshift=12,
-                font={"color": "white", "size": 11},
-                bgcolor="rgba(50,50,50,0.7)",
+                font={"color": "rgba(255, 136, 0, 0.7)", "size": 11},
                 borderpad=2,
             )
 
