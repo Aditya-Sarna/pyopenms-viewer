@@ -1709,21 +1709,23 @@ class MzMLViewer:
                 )
             )
 
-        # Add hover highlight marker when selecting second peak
-        if self.spectrum_hover_peak is not None and self.spectrum_measure_mode and self.spectrum_measure_start is not None:
+        # Add hover highlight marker to show nearest (snap) peak - works in all modes
+        if self.spectrum_hover_peak is not None:
             hover_mz, hover_int = self.spectrum_hover_peak
             if self.spectrum_intensity_percent:
                 hover_y = (hover_int / max_int) * 100
             else:
                 hover_y = hover_int
 
-            # Add a highlighted ring around the hovered peak (yellow for hover target)
+            # Add a highlighted ring around the hovered peak
+            # Yellow in measure mode, cyan otherwise
+            highlight_color = "yellow" if self.spectrum_measure_mode else "cyan"
             fig.add_trace(
                 go.Scatter(
                     x=[hover_mz],
                     y=[hover_y],
                     mode="markers",
-                    marker={"color": "yellow", "size": 12, "symbol": "circle-open", "line": {"width": 2}},
+                    marker={"color": highlight_color, "size": 12, "symbol": "circle-open", "line": {"width": 2}},
                     hoverinfo="skip",
                     showlegend=False,
                 )
@@ -4874,14 +4876,10 @@ def create_ui():
 
                 viewer.spectrum_browser_plot.on("plotly_click", on_spectrum_click)
 
-                # Hover handler for live preview line during measurement
+                # Hover handler to highlight nearest peak (works in all modes)
                 def on_spectrum_hover(e):
-                    """Show live preview line from first peak to hovered peak."""
+                    """Highlight nearest (snap) peak on hover. Shows preview line in measure mode."""
                     try:
-                        # Only show preview when we have a start point selected
-                        if not viewer.spectrum_measure_mode or viewer.spectrum_measure_start is None:
-                            return
-
                         if not e.args:
                             return
 
