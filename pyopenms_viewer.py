@@ -1551,18 +1551,38 @@ class Viewer:
 
     # ==================== Spectrum Measurement Methods ====================
 
-    def snap_to_peak(self, target_mz: float, mz_array: np.ndarray, int_array: np.ndarray) -> tuple[float, float] | None:
-        """Snap to the nearest peak within a tolerance window. Returns (mz, intensity) or None."""
+    def snap_to_peak(
+        self, target_mz: float, mz_array: np.ndarray, int_array: np.ndarray, target_int: float | None = None
+    ) -> tuple[float, float] | None:
+        """Snap to the nearest peak using 2D distance (m/z and intensity). Returns (mz, intensity) or None."""
         if len(mz_array) == 0:
             return None
 
-        # Find the closest peak by m/z
-        idx = np.abs(mz_array - target_mz).argmin()
+        # Normalize both dimensions to [0, 1] for fair distance comparison
+        mz_min, mz_max = float(mz_array.min()), float(mz_array.max())
+        int_min, int_max = float(int_array.min()), float(int_array.max())
+
+        mz_range = mz_max - mz_min if mz_max > mz_min else 1.0
+        int_range = int_max - int_min if int_max > int_min else 1.0
+
+        # Normalize arrays
+        mz_norm = (mz_array - mz_min) / mz_range
+        target_mz_norm = (target_mz - mz_min) / mz_range
+
+        if target_int is not None:
+            # Use 2D Euclidean distance (m/z and intensity)
+            int_norm = (int_array - int_min) / int_range
+            target_int_norm = (target_int - int_min) / int_range
+            distances = np.sqrt((mz_norm - target_mz_norm) ** 2 + (int_norm - target_int_norm) ** 2)
+        else:
+            # Fall back to m/z-only distance
+            distances = np.abs(mz_norm - target_mz_norm)
+
+        idx = distances.argmin()
         snapped_mz = float(mz_array[idx])
         snapped_int = float(int_array[idx])
 
-        # Only snap if within a reasonable tolerance (0.5% of m/z range or 1 Da, whichever is larger)
-        mz_range = mz_array.max() - mz_array.min() if len(mz_array) > 1 else 100.0
+        # Only snap if within a reasonable tolerance (1% of m/z range or 1 Da, whichever is larger)
         tolerance = max(1.0, mz_range * 0.01)
 
         if abs(snapped_mz - target_mz) > tolerance:
@@ -4922,6 +4942,7 @@ def create_ui():
                             return
 
                         hovered_mz = points[0].get("x")
+                        hovered_int = points[0].get("y")
                         if hovered_mz is None:
                             return
 
@@ -4934,8 +4955,8 @@ def create_ui():
                         if len(mz_array) == 0:
                             return
 
-                        # Snap to nearest peak
-                        snapped = viewer.snap_to_peak(hovered_mz, mz_array, int_array)
+                        # Snap to nearest peak using 2D distance (m/z and intensity)
+                        snapped = viewer.snap_to_peak(hovered_mz, mz_array, int_array, hovered_int)
                         if snapped is None:
                             return
 
