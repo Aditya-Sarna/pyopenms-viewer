@@ -302,13 +302,13 @@ def create_annotated_spectrum_plot(
         )
     )
 
-    # Add hover points for experimental peaks
+    # Add invisible hover points for experimental peaks (opacity 0 hides markers but keeps hover)
     fig.add_trace(
         go.Scatter(
             x=exp_mz,
             y=exp_int_norm,
             mode="markers",
-            marker={"color": "gray", "size": 2},
+            marker={"color": "gray", "size": 8, "opacity": 0},
             showlegend=False,
             hovertemplate="m/z: %{x:.4f}<br>Intensity: %{y:.1f}%<extra></extra>",
         )
@@ -460,7 +460,7 @@ def get_colormap_background(colormap_name: str) -> str:
         return "black"
 
 
-class MzMLViewer:
+class Viewer:
     """High-performance mzML peak map viewer using datashader with feature and ID overlay."""
 
     def __init__(self):
@@ -612,6 +612,9 @@ class MzMLViewer:
         self.plot_3d = None  # Plotly 3D plot element
         self.scene_3d_container = None
         self.view_3d_status = None  # Status label for 3D view
+
+        # Dark mode reference
+        self.dark = None  # Set by create_ui() after viewer creation
         self.max_3d_peaks = 5000  # Limit peaks for 3D performance
         self.rt_threshold_3d = 120.0  # Max RT range for 3D (seconds)
         self.mz_threshold_3d = 50.0  # Max m/z range for 3D
@@ -1407,8 +1410,10 @@ class MzMLViewer:
             # Create figure
             fig = go.Figure()
 
-            # Color based on MS level
-            color = "#00d4ff" if ms_level == 1 else "#ff6b6b"
+            # Color based on theme (same color for all MS levels)
+            # Light mode: black; Dark mode: cyan
+            is_dark = self.dark.value if self.dark else True
+            color = "#00d4ff" if is_dark else "#000000"
 
             # Add spectrum as vertical lines (stem plot) - doesn't get thicker when zooming
             # Create x, y arrays for stem plot: each peak is [mz, mz, None], [0, intensity, None]
@@ -1422,13 +1427,13 @@ class MzMLViewer:
                 go.Scatter(x=x_stems, y=y_stems, mode="lines", line={"color": color, "width": 1}, hoverinfo="skip")
             )
 
-            # Add hover points at peak tops
+            # Add invisible hover points at peak tops (opacity 0 hides markers but keeps hover)
             fig.add_trace(
                 go.Scatter(
                     x=mz_array,
                     y=int_display,
                     mode="markers",
-                    marker={"color": color, "size": 3},
+                    marker={"color": color, "size": 8, "opacity": 0},
                     hovertemplate=hover_fmt,
                 )
             )
@@ -3853,10 +3858,11 @@ class MzMLViewer:
 
 def create_ui():
     """Create NiceGUI interface - root page function for NiceGUI 3.x."""
-    viewer = MzMLViewer()
+    viewer = Viewer()
 
     dark = ui.dark_mode()
     dark.enable()
+    viewer.dark = dark  # Store dark mode reference for spectrum plot colors
 
     # Top-right corner buttons (dark mode toggle + fullscreen)
     with ui.element("div").classes("fixed top-2 right-2 z-50 flex gap-1"):
