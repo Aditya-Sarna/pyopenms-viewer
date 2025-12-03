@@ -44,9 +44,8 @@ jobs:
           uv pip install --system pyinstaller
 
       - name: Build with PyInstaller
-        shell: bash
         run: |
-          pyinstaller --onefile --name pyopenms-viewer --noconsole \
+          bash -lc 'pyinstaller --onefile --name pyopenms-viewer --noconsole \
             --collect-all numpy \
             --collect-all pandas \
             --collect-all datashader \
@@ -55,7 +54,7 @@ jobs:
             --collect-all plotly \
             --hidden-import numpy._core._methods \
             --hidden-import numpy._core._dtype_ctypes \
-            pyopenms_viewer.py
+            pyopenms_viewer.py'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
