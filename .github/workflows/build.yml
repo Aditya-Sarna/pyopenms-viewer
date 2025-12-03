@@ -45,7 +45,16 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --onefile --name pyopenms-viewer --noconsole pyopenms_viewer.py
+          pyinstaller --onefile --name pyopenms-viewer --noconsole \
+            --collect-all numpy \
+            --collect-all pandas \
+            --collect-all datashader \
+            --collect-all pyopenms \
+            --collect-all nicegui \
+            --collect-all plotly \
+            --hidden-import numpy._core._methods \
+            --hidden-import numpy._core._dtype_ctypes \
+            pyopenms_viewer.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
