@@ -51,7 +51,7 @@ import matplotlib
 import plotly.graph_objects as go
 
 # NiceGUI for the web interface
-from nicegui import run, ui
+from nicegui import app, run, ui
 from nicegui.events import MouseEventArguments
 
 # PIL for drawing overlays and axes
@@ -4160,7 +4160,121 @@ def create_ui():
                     except Exception:
                         pass
 
+            async def open_native_file_dialog():
+                """Open native file dialog to select files directly from filesystem.
+
+                Only available in native mode (--native flag). Uses pywebview's
+                create_file_dialog() to show a native OS file picker.
+                """
+                # Check if running in native mode
+                if not app.native.main_window:
+                    ui.notify("Native file dialog is only available in native mode (--native)", type="warning")
+                    return
+
+                try:
+                    # Open file dialog with filters for supported file types
+                    files = await app.native.main_window.create_file_dialog(
+                        allow_multiple=True,
+                        file_types=(
+                            "Mass Spec Files (*.mzML;*.featureXML;*.idXML)",
+                            "mzML Files (*.mzML)",
+                            "Feature Files (*.featureXML)",
+                            "ID Files (*.idXML)",
+                            "All Files (*.*)",
+                        ),
+                    )
+
+                    if not files:
+                        return  # User cancelled
+
+                    # Process each selected file
+                    for filepath in files:
+                        filename = Path(filepath).name
+                        ext = Path(filepath).suffix.lower()
+
+                        try:
+                            if ext == ".mzml":
+                                success = await run.io_bound(viewer.load_mzml_sync, filepath)
+                                if success:
+                                    viewer.update_plot()
+                                    viewer.update_tic_plot()
+                                    if viewer.exp and viewer.exp.size() > 0:
+                                        viewer.show_spectrum_in_browser(0)
+                                        if viewer.spectrum_expansion is not None:
+                                            viewer.spectrum_expansion.set_value(True)
+                                        if viewer.tic_expansion is not None:
+                                            viewer.tic_expansion.set_value(True)
+                                        if viewer.spectrum_table_expansion is not None:
+                                            viewer.spectrum_table_expansion.set_value(True)
+                                    info_text = (
+                                        f"Loaded: {filename} | Spectra: {viewer.exp.size():,} | "
+                                        f"Peaks: {len(viewer.df):,}"
+                                    )
+                                    if viewer.has_faims:
+                                        info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
+                                    if viewer.info_label:
+                                        viewer.info_label.set_text(info_text)
+                                    if viewer.spectrum_table is not None:
+                                        viewer.spectrum_table.rows = viewer.spectrum_data
+                                    if viewer.has_faims:
+                                        if viewer.faims_info_label:
+                                            cv_str = ", ".join([f"{cv:.1f}V" for cv in viewer.faims_cvs])
+                                            viewer.faims_info_label.set_text(f"FAIMS CVs: {cv_str}")
+                                            viewer.faims_info_label.set_visibility(True)
+                                        if viewer.faims_toggle:
+                                            viewer.faims_toggle.set_visibility(True)
+                                    ui.notify(f"Loaded {len(viewer.df):,} peaks from {filename}", type="positive")
+                                else:
+                                    ui.notify(f"Failed to load {filename}", type="negative")
+
+                            elif ext == ".featurexml":
+                                success = await run.io_bound(viewer.load_featuremap_sync, filepath)
+                                if success:
+                                    viewer.update_plot()
+                                    if viewer.feature_info_label:
+                                        viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
+                                    if viewer.feature_table is not None:
+                                        viewer.feature_table.rows = viewer.feature_data
+                                    ui.notify(
+                                        f"Loaded {viewer.feature_map.size():,} features from {filename}",
+                                        type="positive",
+                                    )
+
+                            elif ext == ".idxml":
+                                success = await run.io_bound(viewer.load_idxml_sync, filepath)
+                                if success:
+                                    viewer.update_plot()
+                                    n_linked = sum(1 for s in viewer.spectrum_data if s.get("id_idx") is not None)
+                                    if viewer.id_info_label:
+                                        viewer.id_info_label.set_text(f"IDs: {len(viewer.peptide_ids):,} ({n_linked} linked)")
+                                    if viewer.spectrum_table is not None:
+                                        viewer.spectrum_table.rows = viewer.spectrum_data
+                                    ui.notify(
+                                        f"Loaded {len(viewer.peptide_ids):,} IDs ({n_linked} linked) from {filename}",
+                                        type="positive",
+                                    )
+
+                            else:
+                                ui.notify(
+                                    f"Unknown file type: {filename}. Supported: .mzML, .featureXML, .idXML",
+                                    type="warning",
+                                )
+
+                        except Exception as ex:
+                            ui.notify(f"Error loading {filename}: {ex}", type="negative")
+                            viewer.set_loading(False)
+
+                except Exception as ex:
+                    ui.notify(f"File dialog error: {ex}", type="negative")
+
             with ui.row().classes("w-full items-center gap-4"):
+                # Native file dialog button (works in native mode, shows warning in browser mode)
+                ui.button(
+                    "Open Files...",
+                    icon="folder_open",
+                    on_click=open_native_file_dialog,
+                ).props("outline").tooltip("Open files using native file dialog (native mode only)")
+
                 ui.upload(
                     label="Drop mzML, featureXML, or idXML files here",
                     on_upload=handle_upload,
