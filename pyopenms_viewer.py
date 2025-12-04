@@ -493,7 +493,7 @@ class Viewer:
         self.tic_rt = None
         self.tic_intensity = None
 
-        # Chromatogram data (non-TIC chromatograms from mzML)
+        # Chromatogram data (all chromatograms from mzML, including stored TIC)
         self.chromatograms = []  # List of chromatogram metadata dicts
         self.chromatogram_data = {}  # Dict: chrom_idx -> (rt_array, intensity_array)
         self.selected_chromatogram_indices = []  # List of selected chromatogram indices to display
@@ -899,7 +899,7 @@ class Viewer:
             if progress_callback:
                 progress_callback("Extracting chromatograms...", 0.77)
 
-            # Extract chromatograms (non-TIC chromatograms for DIA/OpenSWATH data)
+            # Extract chromatograms (all chromatograms including stored TIC)
             self._extract_chromatograms()
 
             if progress_callback:
@@ -933,10 +933,29 @@ class Viewer:
                     cv_df = self.df[self.df["cv"] == cv].copy()
                     self.faims_data[cv] = cv_df
 
-            self.rt_min = float(self.df["rt"].min())
-            self.rt_max = float(self.df["rt"].max())
-            self.mz_min = float(self.df["mz"].min())
-            self.mz_max = float(self.df["mz"].max())
+            # Set bounds from peak data if available
+            if len(self.df) > 0:
+                self.rt_min = float(self.df["rt"].min())
+                self.rt_max = float(self.df["rt"].max())
+                self.mz_min = float(self.df["mz"].min())
+                self.mz_max = float(self.df["mz"].max())
+            else:
+                # No regular peak data - use IM data bounds or spectrum metadata
+                if self.has_ion_mobility and self.im_df is not None and len(self.im_df) > 0:
+                    self.mz_min = float(self.im_df["mz"].min())
+                    self.mz_max = float(self.im_df["mz"].max())
+                # Get RT from spectrum metadata
+                if self.spectrum_data:
+                    rts = [s["rt"] for s in self.spectrum_data if isinstance(s["rt"], (int, float)) and s["rt"] > 0]
+                    if rts:
+                        self.rt_min = min(rts)
+                        self.rt_max = max(rts)
+
+            # Ensure valid ranges (avoid zero range which causes division by zero)
+            if self.rt_max <= self.rt_min:
+                self.rt_max = self.rt_min + 1.0
+            if self.mz_max <= self.mz_min:
+                self.mz_max = self.mz_min + 1.0
 
             self.view_rt_min = self.rt_min
             self.view_rt_max = self.rt_max
@@ -947,7 +966,9 @@ class Viewer:
             return True
 
         except Exception as e:
+            import traceback
             print(f"Error processing mzML: {e}")
+            traceback.print_exc()
             return False
 
     def load_mzml_sync(self, filepath: str) -> bool:
@@ -1190,8 +1211,9 @@ class Viewer:
     def _extract_chromatograms(self) -> None:
         """Extract chromatogram data from the experiment.
 
-        Extracts non-TIC chromatograms (e.g., from DIA/OpenSWATH data) and stores
+        Extracts all chromatograms (including TIC if stored in file) and stores
         metadata in self.chromatograms and data in self.chromatogram_data.
+        TIC chromatograms are marked with is_tic=True in metadata.
         """
         if self.exp is None:
             self.chromatograms = []
@@ -1212,9 +1234,8 @@ class Viewer:
         for idx, chrom in enumerate(chroms):
             native_id = chrom.getNativeID()
 
-            # Skip TIC chromatograms (we compute our own)
-            if "TIC" in native_id.upper() or "total ion" in native_id.lower():
-                continue
+            # Check if this is a TIC chromatogram (stored in file, not computed)
+            is_tic = "TIC" in native_id.upper() or "total ion" in native_id.lower()
 
             # Get RT and intensity arrays
             rt_array, int_array = chrom.get_peaks()
@@ -1240,6 +1261,8 @@ class Viewer:
             self.chromatograms.append({
                 "idx": idx,
                 "native_id": native_id,
+                "is_tic": is_tic,
+                "type": "TIC" if is_tic else "",
                 "precursor_mz": round(precursor_mz, 4) if precursor_mz > 0 else "-",
                 "precursor_z": precursor_charge if precursor_charge > 0 else "-",
                 "product_mz": round(product_mz, 4) if product_mz > 0 else "-",
@@ -1333,7 +1356,7 @@ class Viewer:
             float_arrays = spec.getFloatDataArrays()
             for fda in float_arrays:
                 if fda.getName() == detected_im_name:
-                    im_array = np.array(fda, dtype=np.float32)
+                    im_array = np.array(fda.get_data(), dtype=np.float32)
                     break
 
             if im_array is None or len(im_array) != len(mz_array):
@@ -1364,8 +1387,23 @@ class Viewer:
         # Set bounds
         self.im_min = float(self.im_df["im"].min())
         self.im_max = float(self.im_df["im"].max())
+        # Ensure valid IM range (avoid zero range which causes division by zero)
+        if self.im_max <= self.im_min:
+            self.im_max = self.im_min + 1.0
         self.view_im_min = self.im_min
         self.view_im_max = self.im_max
+
+        # Also update mz bounds from IM data if not already set
+        im_mz_min = float(self.im_df["mz"].min())
+        im_mz_max = float(self.im_df["mz"].max())
+        if self.mz_min == 0 or im_mz_min < self.mz_min:
+            self.mz_min = im_mz_min
+        if self.mz_max == 0 or im_mz_max > self.mz_max:
+            self.mz_max = im_mz_max
+        if self.view_mz_min is None or self.view_mz_min < self.mz_min:
+            self.view_mz_min = self.mz_min
+        if self.view_mz_max is None or self.view_mz_max > self.mz_max:
+            self.view_mz_max = self.mz_max
 
         self.has_ion_mobility = True
 
@@ -3576,6 +3614,8 @@ class Viewer:
         # X-axis: m/z
         x_ticks = calculate_nice_ticks(self.view_mz_min, self.view_mz_max, num_ticks=8)
         x_range = self.view_mz_max - self.view_mz_min
+        if x_range == 0:
+            x_range = 1.0  # Prevent division by zero
 
         for tick_val in x_ticks:
             if self.view_mz_min <= tick_val <= self.view_mz_max:
@@ -3600,6 +3640,8 @@ class Viewer:
         # Y-axis: IM
         y_ticks = calculate_nice_ticks(self.view_im_min, self.view_im_max, num_ticks=8)
         y_range = self.view_im_max - self.view_im_min
+        if y_range == 0:
+            y_range = 1.0  # Prevent division by zero
 
         for tick_val in y_ticks:
             if self.view_im_min <= tick_val <= self.view_im_max:
@@ -5044,6 +5086,7 @@ def create_ui():
             # Chromatogram table
             chrom_columns = [
                 {"name": "idx", "label": "#", "field": "idx", "sortable": True, "align": "left"},
+                {"name": "type", "label": "Type", "field": "type", "sortable": True, "align": "left"},
                 {"name": "native_id", "label": "Native ID", "field": "native_id", "sortable": True, "align": "left"},
                 {"name": "precursor_mz", "label": "Q1 (m/z)", "field": "precursor_mz", "sortable": True, "align": "right"},
                 {"name": "product_mz", "label": "Q3 (m/z)", "field": "product_mz", "sortable": True, "align": "right"},
