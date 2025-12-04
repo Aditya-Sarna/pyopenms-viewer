@@ -495,7 +495,7 @@ def create_annotated_spectrum_plot(
 
     # Add annotations if enabled
     if annotate:
-        matched_peaks = {"b": [], "y": [], "a": [], "c": [], "x": [], "z": [], "unknown": []}
+        matched_peaks = {"b": [], "y": [], "a": [], "c": [], "x": [], "z": [], "precursor": [], "unknown": []}
 
         if peak_annotations:
             # Use provided peak annotations from SpectrumAnnotator
@@ -690,6 +690,7 @@ class Viewer:
         # TIC data
         self.tic_rt = None
         self.tic_intensity = None
+        self.tic_source = "MS1 TIC"  # Description of TIC source (e.g., "MS1 TIC", "MS2 BPC")
 
         # Chromatogram data (all chromatograms from mzML, including stored TIC)
         self.chromatograms = []  # List of chromatogram metadata dicts
@@ -1098,15 +1099,29 @@ class Viewer:
             ms1_count = 0
             total_ms1 = sum(1 for spec in self.exp if spec.getMSLevel() == 1)
 
+            # Determine TIC source: MS1 TIC or fallback to MS2+ BPC
+            if total_ms1 > 0:
+                tic_ms_level = 1
+                self.tic_source = "MS1 TIC"
+            else:
+                # No MS1 spectra - find the lowest available MS level > 1
+                ms_levels = set(spec.getMSLevel() for spec in self.exp)
+                tic_ms_level = min(lv for lv in ms_levels if lv > 1) if ms_levels else 2
+                self.tic_source = f"MS{tic_ms_level} BPC"
+
+            total_tic_spectra = sum(1 for spec in self.exp if spec.getMSLevel() == tic_ms_level)
+
             for spec in self.exp:
-                if spec.getMSLevel() != 1:
-                    continue
+                if spec.getMSLevel() != tic_ms_level:
+                    # Only extract peaks from MS1 for the peak map (if available)
+                    if tic_ms_level == 1 or spec.getMSLevel() != 1:
+                        continue
 
                 ms1_count += 1
                 # Update progress every 100 spectra
                 if progress_callback and ms1_count % 100 == 0:
-                    progress = 0.1 + 0.6 * (ms1_count / max(total_ms1, 1))
-                    progress_callback(f"Extracting peaks... {ms1_count:,}/{total_ms1:,}", progress)
+                    progress = 0.1 + 0.6 * (ms1_count / max(total_tic_spectra, 1))
+                    progress_callback(f"Extracting peaks... {ms1_count:,}/{total_tic_spectra:,}", progress)
 
                 rt = spec.getRT()
                 mz_array, int_array = spec.get_peaks()
@@ -1115,22 +1130,30 @@ class Viewer:
                 cv = self._get_cv_from_spectrum(spec) if self.has_faims else None
 
                 if n > 0:
-                    rts[idx : idx + n] = rt
-                    mzs[idx : idx + n] = mz_array
-                    intensities[idx : idx + n] = int_array
-                    if self.has_faims and cv is not None:
-                        cvs[idx : idx + n] = cv
-                    idx += n
+                    # Only add to peak map DataFrame if MS1
+                    if spec.getMSLevel() == 1:
+                        rts[idx : idx + n] = rt
+                        mzs[idx : idx + n] = mz_array
+                        intensities[idx : idx + n] = int_array
+                        if self.has_faims and cv is not None:
+                            cvs[idx : idx + n] = cv
+                        idx += n
 
-                    # TIC: sum of all intensities for this spectrum
-                    tic_sum = float(np.sum(int_array))
+                    # TIC/BPC calculation
+                    if tic_ms_level == 1:
+                        # MS1: use sum (TIC)
+                        tic_value = float(np.sum(int_array))
+                    else:
+                        # MS2+: use base peak (BPC)
+                        tic_value = float(np.max(int_array))
+
                     tic_rts.append(rt)
-                    tic_intensities.append(tic_sum)
+                    tic_intensities.append(tic_value)
 
                     # Per-CV TIC
                     if self.has_faims and cv is not None:
                         faims_tic_data[cv]["rt"].append(rt)
-                        faims_tic_data[cv]["int"].append(tic_sum)
+                        faims_tic_data[cv]["int"].append(tic_value)
 
             rts = rts[:idx]
             mzs = mzs[:idx]
@@ -1141,17 +1164,20 @@ class Viewer:
             if progress_callback:
                 progress_callback("Building TIC...", 0.75)
 
-            # Store TIC data
-            self.tic_rt = np.array(tic_rts, dtype=np.float32)
-            self.tic_intensity = np.array(tic_intensities, dtype=np.float32)
+            # Store TIC data (sorted by RT to avoid zig-zag line plots)
+            tic_rt_arr = np.array(tic_rts, dtype=np.float32)
+            tic_int_arr = np.array(tic_intensities, dtype=np.float32)
+            sort_idx = np.argsort(tic_rt_arr)
+            self.tic_rt = tic_rt_arr[sort_idx]
+            self.tic_intensity = tic_int_arr[sort_idx]
 
-            # Store per-CV TIC data
+            # Store per-CV TIC data (also sorted by RT)
             self.faims_tic = {}
             for cv in self.faims_cvs:
-                self.faims_tic[cv] = (
-                    np.array(faims_tic_data[cv]["rt"], dtype=np.float32),
-                    np.array(faims_tic_data[cv]["int"], dtype=np.float32),
-                )
+                cv_rt = np.array(faims_tic_data[cv]["rt"], dtype=np.float32)
+                cv_int = np.array(faims_tic_data[cv]["int"], dtype=np.float32)
+                cv_sort_idx = np.argsort(cv_rt)
+                self.faims_tic[cv] = (cv_rt[cv_sort_idx], cv_int[cv_sort_idx])
 
             if progress_callback:
                 progress_callback("Extracting chromatograms...", 0.77)
@@ -1284,6 +1310,17 @@ class Viewer:
             tic_intensities = []
             faims_tic_data = {cv: {"rt": [], "int": []} for cv in self.faims_cvs} if self.has_faims else {}
 
+            # Determine TIC source: MS1 TIC or fallback to MS2+ BPC
+            total_ms1 = sum(1 for spec in self.exp if spec.getMSLevel() == 1)
+            if total_ms1 > 0:
+                tic_ms_level = 1
+                self.tic_source = "MS1 TIC"
+            else:
+                # No MS1 spectra - find the lowest available MS level > 1
+                ms_levels = set(spec.getMSLevel() for spec in self.exp)
+                tic_ms_level = min(lv for lv in ms_levels if lv > 1) if ms_levels else 2
+                self.tic_source = f"MS{tic_ms_level} BPC"
+
             idx = 0
             spec_count = 0
             progress_interval = max(1, n_spectra // 20)  # Update progress ~20 times
@@ -1293,8 +1330,11 @@ class Viewer:
                     pct = int(100 * spec_count / n_spectra)
                     self.update_loading_progress(f"Extracting peaks... {pct}% ({idx:,} peaks)")
 
-                if spec.getMSLevel() != 1:
+                ms_level = spec.getMSLevel()
+                # Process spectra for TIC and peak map
+                if ms_level != 1 and ms_level != tic_ms_level:
                     continue
+
                 rt = spec.getRT()
                 mz_array, int_array = spec.get_peaks()
                 n = len(mz_array)
@@ -1302,22 +1342,31 @@ class Viewer:
                 cv = self._get_cv_from_spectrum(spec) if self.has_faims else None
 
                 if n > 0:
-                    rts[idx : idx + n] = rt
-                    mzs[idx : idx + n] = mz_array
-                    intensities[idx : idx + n] = int_array
-                    if self.has_faims and cv is not None:
-                        cvs[idx : idx + n] = cv
-                    idx += n
+                    # Only add to peak map DataFrame if MS1
+                    if ms_level == 1:
+                        rts[idx : idx + n] = rt
+                        mzs[idx : idx + n] = mz_array
+                        intensities[idx : idx + n] = int_array
+                        if self.has_faims and cv is not None:
+                            cvs[idx : idx + n] = cv
+                        idx += n
 
-                    # TIC: sum of all intensities for this spectrum
-                    tic_sum = float(np.sum(int_array))
-                    tic_rts.append(rt)
-                    tic_intensities.append(tic_sum)
+                    # TIC/BPC calculation for the selected level
+                    if ms_level == tic_ms_level:
+                        if tic_ms_level == 1:
+                            # MS1: use sum (TIC)
+                            tic_value = float(np.sum(int_array))
+                        else:
+                            # MS2+: use base peak (BPC)
+                            tic_value = float(np.max(int_array))
 
-                    # Per-CV TIC
-                    if self.has_faims and cv is not None:
-                        faims_tic_data[cv]["rt"].append(rt)
-                        faims_tic_data[cv]["int"].append(tic_sum)
+                        tic_rts.append(rt)
+                        tic_intensities.append(tic_value)
+
+                        # Per-CV TIC
+                        if self.has_faims and cv is not None:
+                            faims_tic_data[cv]["rt"].append(rt)
+                            faims_tic_data[cv]["int"].append(tic_value)
 
             self.update_loading_progress("Building data structures...")
 
@@ -1327,17 +1376,20 @@ class Viewer:
             if self.has_faims:
                 cvs = cvs[:idx]
 
-            # Store TIC data
-            self.tic_rt = np.array(tic_rts, dtype=np.float32)
-            self.tic_intensity = np.array(tic_intensities, dtype=np.float32)
+            # Store TIC data (sorted by RT to avoid zig-zag line plots)
+            tic_rt_arr = np.array(tic_rts, dtype=np.float32)
+            tic_int_arr = np.array(tic_intensities, dtype=np.float32)
+            sort_idx = np.argsort(tic_rt_arr)
+            self.tic_rt = tic_rt_arr[sort_idx]
+            self.tic_intensity = tic_int_arr[sort_idx]
 
-            # Store per-CV TIC data
+            # Store per-CV TIC data (also sorted by RT)
             self.faims_tic = {}
             for cv in self.faims_cvs:
-                self.faims_tic[cv] = (
-                    np.array(faims_tic_data[cv]["rt"], dtype=np.float32),
-                    np.array(faims_tic_data[cv]["int"], dtype=np.float32),
-                )
+                cv_rt = np.array(faims_tic_data[cv]["rt"], dtype=np.float32)
+                cv_int = np.array(faims_tic_data[cv]["int"], dtype=np.float32)
+                cv_sort_idx = np.argsort(cv_rt)
+                self.faims_tic[cv] = (cv_rt[cv_sort_idx], cv_int[cv_sort_idx])
 
             self.update_loading_progress("Extracting spectrum metadata...")
 
@@ -2882,10 +2934,14 @@ class Viewer:
                 annotation_font_size=10,
             )
 
+        # Use tic_source for title (e.g., "MS1 TIC" or "MS2 BPC")
+        tic_title = f"{self.tic_source} - Click to select spectrum"
+        y_label = "Total Intensity" if "TIC" in self.tic_source else "Base Peak Intensity"
+
         fig.update_layout(
-            title={"text": "Total Ion Chromatogram (TIC) - Click to select spectrum", "font": {"size": 14, "color": "#888"}},
+            title={"text": tic_title, "font": {"size": 14, "color": "#888"}},
             xaxis_title=f"RT ({rt_unit})",
-            yaxis_title="Total Intensity",
+            yaxis_title=y_label,
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font={"color": "#888"},
