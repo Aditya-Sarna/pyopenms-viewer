@@ -801,6 +801,11 @@ class Viewer:
         self.im_expansion = None  # Collapsible panel for IM peak map
         self.im_image_element = None  # Interactive image for IM peak map
         self.im_info_label = None
+        self.im_range_label = None  # Label showing current IM range
+        self.link_spectrum_mz_to_im = False  # Link spectrum m/z zoom to IM peakmap m/z range
+        self.link_spectrum_mz_checkbox = None  # UI checkbox reference
+        self.show_mobilogram = True  # Show mobilogram plot on the side of IM peakmap
+        self.mobilogram_plot_width = 150  # Width of mobilogram plot in pixels
 
         # Spectrum browser UI elements
         self.spectrum_table = None
@@ -3858,7 +3863,7 @@ class Viewer:
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     def render_im_image(self) -> str:
-        """Render ion mobility peak map (m/z vs IM) using datashader.
+        """Render ion mobility peak map (m/z vs IM) using datashader with optional mobilogram.
 
         Returns base64-encoded PNG image string.
         """
@@ -3895,19 +3900,102 @@ class Viewer:
 
         plot_img = img.to_pil()
 
-        # Create canvas with margins for axes
-        canvas = Image.new("RGBA", (self.canvas_width, self.canvas_height), (0, 0, 0, 0))
+        # Calculate canvas width - add space for mobilogram if enabled
+        mobilogram_space = self.mobilogram_plot_width + 20 if self.show_mobilogram else 0
+        total_canvas_width = self.canvas_width + mobilogram_space
+
+        # Create canvas with margins for axes (wider if mobilogram is shown)
+        canvas = Image.new("RGBA", (total_canvas_width, self.canvas_height), (0, 0, 0, 0))
         plot_img_rgba = plot_img.convert("RGBA")
         canvas.paste(plot_img_rgba, (self.margin_left, self.margin_top))
 
         # Draw axes
         canvas = self._draw_im_axes(canvas)
 
+        # Draw mobilogram on the right side if enabled
+        if self.show_mobilogram:
+            canvas = self._draw_mobilogram(canvas)
+
         buffer = io.BytesIO()
         canvas.save(buffer, format="PNG")
         buffer.seek(0)
 
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def _draw_mobilogram(self, canvas: Image.Image) -> Image.Image:
+        """Draw mobilogram (summed intensity vs IM) on the right side of the IM peakmap."""
+        draw = ImageDraw.Draw(canvas)
+
+        # Get mobilogram data
+        im_values, intensities = self.extract_mobilogram()
+        if len(im_values) == 0 or len(intensities) == 0:
+            return canvas
+
+        # Mobilogram plot area (to the right of the main plot)
+        mob_left = self.margin_left + self.plot_width + 10
+        mob_right = mob_left + self.mobilogram_plot_width
+        mob_top = self.margin_top
+        mob_bottom = self.margin_top + self.plot_height
+
+        # Draw border for mobilogram area
+        draw.rectangle([mob_left, mob_top, mob_right, mob_bottom], outline=self.axis_color, width=1)
+
+        # Normalize intensities to plot width
+        max_intensity = np.max(intensities) if len(intensities) > 0 else 1.0
+        if max_intensity == 0:
+            max_intensity = 1.0
+
+        # Draw filled mobilogram as horizontal bars
+        im_range = self.view_im_max - self.view_im_min
+        if im_range == 0:
+            im_range = 1.0
+
+        # Draw as a filled area plot
+        points = []
+        for i, (im_val, intensity) in enumerate(zip(im_values, intensities)):
+            # Y position (IM axis, inverted - low IM at bottom)
+            y_frac = 1.0 - (im_val - self.view_im_min) / im_range
+            y = mob_top + int(y_frac * self.plot_height)
+
+            # X position (intensity, starting from left edge)
+            x_frac = intensity / max_intensity
+            x = mob_left + int(x_frac * self.mobilogram_plot_width)
+
+            points.append((x, y))
+
+        # Draw line connecting all points
+        if len(points) > 1:
+            # Draw filled polygon (intensity profile)
+            fill_points = [(mob_left, mob_top)]  # Start at top-left
+            fill_points.extend(points)
+            fill_points.append((mob_left, mob_bottom))  # End at bottom-left
+
+            # Fill with semi-transparent cyan
+            draw.polygon(fill_points, fill=(0, 200, 255, 80))
+
+            # Draw the line on top
+            draw.line(points, fill=(0, 200, 255, 255), width=2)
+
+        # Draw axis label at top
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        except OSError:
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf", 10)
+            except OSError:
+                font = ImageFont.load_default()
+
+        label = "Mobilogram"
+        bbox = draw.textbbox((0, 0), label, font=font)
+        label_width = bbox[2] - bbox[0]
+        draw.text(
+            (mob_left + (self.mobilogram_plot_width - label_width) // 2, mob_top - 15),
+            label,
+            fill=self.label_color,
+            font=font,
+        )
+
+        return canvas
 
     def _draw_im_axes(self, canvas: Image.Image) -> Image.Image:
         """Draw axes for IM peak map (m/z on X, IM on Y)."""
@@ -4011,6 +4099,54 @@ class Viewer:
             self.view_im_min = self.im_min
             self.view_im_max = self.im_max
             self.update_im_plot()
+
+    def extract_mobilogram(self, mz_min: float = None, mz_max: float = None) -> tuple:
+        """Extract mobilogram (summed intensity vs ion mobility) from IM data.
+
+        Args:
+            mz_min: Minimum m/z value for extraction (uses view_mz_min if None)
+            mz_max: Maximum m/z value for extraction (uses view_mz_max if None)
+
+        Returns:
+            Tuple of (im_values, intensities) arrays for plotting
+        """
+        if self.im_df is None or len(self.im_df) == 0:
+            return np.array([]), np.array([])
+
+        # Use current view bounds if not specified
+        if mz_min is None:
+            mz_min = self.view_mz_min
+        if mz_max is None:
+            mz_max = self.view_mz_max
+
+        # Filter to m/z range and current IM view
+        mask = (
+            (self.im_df["mz"] >= mz_min)
+            & (self.im_df["mz"] <= mz_max)
+            & (self.im_df["im"] >= self.view_im_min)
+            & (self.im_df["im"] <= self.view_im_max)
+        )
+        filtered_df = self.im_df[mask]
+
+        if len(filtered_df) == 0:
+            return np.array([]), np.array([])
+
+        # Bin IM values and sum intensities (similar to how TIC is calculated)
+        im_range = self.view_im_max - self.view_im_min
+        n_bins = min(200, max(50, int(len(filtered_df) / 100)))  # Adaptive bin count
+
+        bin_edges = np.linspace(self.view_im_min, self.view_im_max, n_bins + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+        # Digitize IM values into bins
+        bin_indices = np.digitize(filtered_df["im"].values, bin_edges) - 1
+        bin_indices = np.clip(bin_indices, 0, n_bins - 1)
+
+        # Sum intensities per bin
+        intensities = np.zeros(n_bins, dtype=np.float64)
+        np.add.at(intensities, bin_indices, filtered_df["intensity"].values)
+
+        return bin_centers, intensities
 
     def update_faims_plots(self):
         """Update all FAIMS CV peak map panels."""
@@ -6076,6 +6212,42 @@ def create_ui():
                 viewer.im_info_label = ui.label("No ion mobility data").classes("text-sm text-gray-400")
                 ui.element("div").classes("flex-grow")
 
+                # Checkbox to link spectrum m/z zoom to IM peakmap
+                def on_link_spectrum_change(e):
+                    viewer.link_spectrum_mz_to_im = e.value
+                    if e.value and viewer.spectrum_zoom_range:
+                        # Apply current spectrum zoom to IM view
+                        xmin, xmax = viewer.spectrum_zoom_range
+                        viewer.view_mz_min = max(viewer.mz_min, xmin)
+                        viewer.view_mz_max = min(viewer.mz_max, xmax)
+                        viewer.update_im_plot()
+                        if viewer.im_range_label:
+                            viewer.im_range_label.set_text(
+                                f"m/z: {viewer.view_mz_min:.2f} - {viewer.view_mz_max:.2f} | "
+                                f"IM: {viewer.view_im_min:.3f} - {viewer.view_im_max:.3f} {viewer.im_unit}"
+                            )
+
+                viewer.link_spectrum_mz_checkbox = ui.checkbox(
+                    "Link to Spectrum m/z", value=viewer.link_spectrum_mz_to_im, on_change=on_link_spectrum_change
+                ).props("dense").tooltip("Sync m/z range with spectrum plot zoom")
+
+                # Checkbox to show/hide mobilogram
+                def on_mobilogram_change(e):
+                    viewer.show_mobilogram = e.value
+                    # Update image width when mobilogram toggle changes
+                    mobilogram_space = viewer.mobilogram_plot_width + 20 if viewer.show_mobilogram else 0
+                    new_width = viewer.canvas_width + mobilogram_space
+                    if viewer.im_image_element:
+                        viewer.im_image_element.style(
+                            f"width: {new_width}px; height: {viewer.canvas_height}px; "
+                            f"background: transparent; cursor: crosshair;"
+                        )
+                    viewer.update_im_plot()
+
+                ui.checkbox(
+                    "Show Mobilogram", value=viewer.show_mobilogram, on_change=on_mobilogram_change
+                ).props("dense").tooltip("Show summed intensity profile vs ion mobility")
+
                 def reset_im_view_click():
                     viewer.reset_im_view()
 
@@ -6087,12 +6259,14 @@ def create_ui():
                 # IM range labels
                 viewer.im_range_label = ui.label("IM: --").classes("text-xs text-gray-500")
 
-            # IM peak map image (similar to main peakmap)
+            # IM peak map image (similar to main peakmap) - wider to accommodate mobilogram
+            mobilogram_space = viewer.mobilogram_plot_width + 20 if viewer.show_mobilogram else 0
+            im_canvas_width = viewer.canvas_width + mobilogram_space
             with ui.column().classes("w-full items-center"):
                 viewer.im_image_element = (
                     ui.interactive_image()
                     .style(
-                        f"width: {viewer.canvas_width}px; height: {viewer.canvas_height}px; "
+                        f"width: {im_canvas_width}px; height: {viewer.canvas_height}px; "
                         f"background: transparent; cursor: crosshair;"
                     )
                     .classes("border border-gray-600")
@@ -6593,12 +6767,32 @@ def create_ui():
                             # Re-render to apply auto-scale if enabled
                             if viewer.spectrum_auto_scale and viewer.selected_spectrum_idx is not None:
                                 viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+                            # Sync m/z range to IM peakmap if linking is enabled
+                            if viewer.link_spectrum_mz_to_im and viewer.has_ion_mobility:
+                                viewer.view_mz_min = max(viewer.mz_min, xmin)
+                                viewer.view_mz_max = min(viewer.mz_max, xmax)
+                                viewer.update_im_plot()
+                                if viewer.im_range_label:
+                                    viewer.im_range_label.set_text(
+                                        f"m/z: {viewer.view_mz_min:.2f} - {viewer.view_mz_max:.2f} | "
+                                        f"IM: {viewer.view_im_min:.3f} - {viewer.view_im_max:.3f} {viewer.im_unit}"
+                                    )
                         # Check for autorange (reset)
                         elif e.args.get("xaxis.autorange"):
                             viewer.spectrum_zoom_range = None
                             # Re-render to reset y-axis if auto-scale enabled
                             if viewer.spectrum_auto_scale and viewer.selected_spectrum_idx is not None:
                                 viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+                            # Reset IM m/z range if linking is enabled
+                            if viewer.link_spectrum_mz_to_im and viewer.has_ion_mobility:
+                                viewer.view_mz_min = viewer.mz_min
+                                viewer.view_mz_max = viewer.mz_max
+                                viewer.update_im_plot()
+                                if viewer.im_range_label:
+                                    viewer.im_range_label.set_text(
+                                        f"m/z: {viewer.view_mz_min:.2f} - {viewer.view_mz_max:.2f} | "
+                                        f"IM: {viewer.view_im_min:.3f} - {viewer.view_im_max:.3f} {viewer.im_unit}"
+                                    )
                     except Exception:
                         pass
 
