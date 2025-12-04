@@ -118,6 +118,11 @@ uv run pyopenms-viewer sample.mzML features.featureXML ids.idXML
 - Drag and drop files onto the upload area
 - Supports `.mzML`, `.featureXML`, and `.idXML` files
 
+**Via native file dialog (native mode only):**
+- Click the "Open Files..." button to open a native OS file picker
+- Only available when running with `--native` flag
+- Provides direct filesystem access without file upload
+
 ### Step 3: Navigate the Peak Map
 
 - **Zoom**: Scroll with mouse wheel

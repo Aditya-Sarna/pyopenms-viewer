@@ -51,7 +51,7 @@ import matplotlib
 import plotly.graph_objects as go
 
 # NiceGUI for the web interface
-from nicegui import run, ui
+from nicegui import app, run, ui
 from nicegui.events import MouseEventArguments
 
 # PIL for drawing overlays and axes
@@ -493,6 +493,22 @@ class Viewer:
         self.tic_rt = None
         self.tic_intensity = None
 
+        # Chromatogram data (non-TIC chromatograms from mzML)
+        self.chromatograms = []  # List of chromatogram metadata dicts
+        self.chromatogram_data = {}  # Dict: chrom_idx -> (rt_array, intensity_array)
+        self.selected_chromatogram_indices = []  # List of selected chromatogram indices to display
+        self.has_chromatograms = False
+
+        # Ion Mobility data (for TIMS, drift tube, etc.)
+        self.has_ion_mobility = False
+        self.im_type = None  # "ion mobility", "inverse reduced ion mobility", "drift time"
+        self.im_unit = ""  # Unit string for display
+        self.im_df = None  # DataFrame with columns: mz, im, intensity, log_intensity
+        self.im_min = 0
+        self.im_max = 1
+        self.view_im_min = None
+        self.view_im_max = None
+
         # FAIMS data
         self.faims_cvs = []  # List of unique CV values
         self.faims_data = {}  # Dict: CV -> DataFrame of peaks
@@ -575,6 +591,17 @@ class Viewer:
         self.tic_plot = None
         self.tic_expansion = None  # Collapsible panel for TIC
 
+        # Chromatogram UI elements
+        self.chromatogram_plot = None
+        self.chromatogram_table = None
+        self.chromatogram_expansion = None  # Collapsible panel for chromatograms
+        self.chromatogram_info_label = None
+
+        # Ion Mobility UI elements
+        self.im_expansion = None  # Collapsible panel for IM peak map
+        self.im_image_element = None  # Interactive image for IM peak map
+        self.im_info_label = None
+
         # Spectrum browser UI elements
         self.spectrum_table = None
         self.spectrum_table_expansion = None  # Collapsible panel for Spectrum Table
@@ -637,14 +664,19 @@ class Viewer:
         # Panel order configuration for reorderable panels
         self.panel_definitions = {
             "tic": {"name": "TIC", "icon": "show_chart"},
+            "chromatograms": {"name": "Chromatograms", "icon": "timeline"},
             "peakmap": {"name": "2D Peak Map", "icon": "grid_on"},
+            "im_peakmap": {"name": "Ion Mobility Map", "icon": "blur_on"},
             "spectrum": {"name": "1D Spectrum", "icon": "ssid_chart"},
             "spectra_table": {"name": "Spectra", "icon": "list"},
             "features_table": {"name": "Features", "icon": "scatter_plot"},
             "custom_range": {"name": "Custom Range", "icon": "tune"},
-            "legend": {"name": "Legend & Help", "icon": "help"},
+            "legend": {"name": "Help", "icon": "help"},
         }
-        self.panel_order = ["tic", "peakmap", "spectrum", "spectra_table", "features_table", "custom_range", "legend"]
+        self.panel_order = [
+            "tic", "chromatograms", "peakmap", "im_peakmap", "spectrum", "spectra_table",
+            "features_table", "custom_range", "legend"
+        ]
         self.panel_elements = {}  # Dict: panel_id -> expansion element
         self.panels_container = None  # Column container holding all panels
 
@@ -863,6 +895,18 @@ class Viewer:
                     np.array(faims_tic_data[cv]["rt"], dtype=np.float32),
                     np.array(faims_tic_data[cv]["int"], dtype=np.float32),
                 )
+
+            if progress_callback:
+                progress_callback("Extracting chromatograms...", 0.77)
+
+            # Extract chromatograms (non-TIC chromatograms for DIA/OpenSWATH data)
+            self._extract_chromatograms()
+
+            if progress_callback:
+                progress_callback("Extracting ion mobility data...", 0.78)
+
+            # Extract ion mobility data if present (TIMS, drift tube, etc.)
+            self._extract_ion_mobility_data()
 
             if progress_callback:
                 progress_callback("Extracting spectrum metadata...", 0.8)
@@ -1142,6 +1186,188 @@ class Viewer:
             )
 
         return data
+
+    def _extract_chromatograms(self) -> None:
+        """Extract chromatogram data from the experiment.
+
+        Extracts non-TIC chromatograms (e.g., from DIA/OpenSWATH data) and stores
+        metadata in self.chromatograms and data in self.chromatogram_data.
+        """
+        if self.exp is None:
+            self.chromatograms = []
+            self.chromatogram_data = {}
+            self.has_chromatograms = False
+            return
+
+        chroms = self.exp.getChromatograms()
+        if len(chroms) == 0:
+            self.chromatograms = []
+            self.chromatogram_data = {}
+            self.has_chromatograms = False
+            return
+
+        self.chromatograms = []
+        self.chromatogram_data = {}
+
+        for idx, chrom in enumerate(chroms):
+            native_id = chrom.getNativeID()
+
+            # Skip TIC chromatograms (we compute our own)
+            if "TIC" in native_id.upper() or "total ion" in native_id.lower():
+                continue
+
+            # Get RT and intensity arrays
+            rt_array, int_array = chrom.get_peaks()
+            if len(rt_array) == 0:
+                continue
+
+            # Get precursor info (Q1 for DIA/SRM)
+            precursor = chrom.getPrecursor()
+            precursor_mz = precursor.getMZ() if precursor else 0.0
+            precursor_charge = precursor.getCharge() if precursor else 0
+
+            # Get product info (Q3 for SRM/MRM)
+            product = chrom.getProduct()
+            product_mz = product.getMZ() if product else 0.0
+
+            # Calculate summary statistics
+            rt_min = float(rt_array.min())
+            rt_max = float(rt_array.max())
+            max_intensity = float(int_array.max()) if len(int_array) > 0 else 0
+            total_intensity = float(int_array.sum()) if len(int_array) > 0 else 0
+
+            # Store metadata
+            self.chromatograms.append({
+                "idx": idx,
+                "native_id": native_id,
+                "precursor_mz": round(precursor_mz, 4) if precursor_mz > 0 else "-",
+                "precursor_z": precursor_charge if precursor_charge > 0 else "-",
+                "product_mz": round(product_mz, 4) if product_mz > 0 else "-",
+                "rt_min": round(rt_min, 2),
+                "rt_max": round(rt_max, 2),
+                "n_points": len(rt_array),
+                "max_int": f"{max_intensity:.2e}",
+                "total_int": f"{total_intensity:.2e}",
+            })
+
+            # Store data arrays
+            self.chromatogram_data[idx] = (
+                np.array(rt_array, dtype=np.float32),
+                np.array(int_array, dtype=np.float32),
+            )
+
+        self.has_chromatograms = len(self.chromatograms) > 0
+        self.selected_chromatogram_indices = []  # Reset selection
+
+    def _extract_ion_mobility_data(self) -> None:
+        """Extract ion mobility data from spectra that contain IM arrays.
+
+        For IM data, each spectrum stores a whole frame with concatenated peaks
+        from multiple IM scans. The IM value for each peak is stored in a parallel
+        float data array.
+
+        Creates self.im_df with columns: mz, im, intensity, log_intensity
+        """
+        if self.exp is None:
+            self.has_ion_mobility = False
+            self.im_df = None
+            return
+
+        # Known IM array names (check in order of preference)
+        im_array_names = [
+            "ion mobility",
+            "inverse reduced ion mobility",  # 1/K0 from TIMS (Vs/cm²)
+            "drift time",  # Drift tube (ms)
+            "ion mobility drift time",
+        ]
+
+        # First pass: detect IM data and determine array name
+        detected_im_name = None
+        for spec in self.exp:
+            if spec.getMSLevel() != 1:
+                continue
+            float_arrays = spec.getFloatDataArrays()
+            for fda in float_arrays:
+                name = fda.getName().lower() if fda.getName() else ""
+                for im_name in im_array_names:
+                    if im_name in name:
+                        detected_im_name = fda.getName()
+                        break
+                if detected_im_name:
+                    break
+            if detected_im_name:
+                break
+
+        if not detected_im_name:
+            self.has_ion_mobility = False
+            self.im_df = None
+            return
+
+        # Determine IM type and unit for display
+        name_lower = detected_im_name.lower()
+        if "inverse" in name_lower or "1/k0" in name_lower:
+            self.im_type = "inverse_k0"
+            self.im_unit = "Vs/cm²"
+        elif "drift" in name_lower:
+            self.im_type = "drift_time"
+            self.im_unit = "ms"
+        else:
+            self.im_type = "ion_mobility"
+            self.im_unit = ""
+
+        # Second pass: extract all IM data
+        all_mz = []
+        all_im = []
+        all_int = []
+
+        for spec in self.exp:
+            if spec.getMSLevel() != 1:
+                continue
+
+            mz_array, int_array = spec.get_peaks()
+            if len(mz_array) == 0:
+                continue
+
+            # Find the IM array
+            im_array = None
+            float_arrays = spec.getFloatDataArrays()
+            for fda in float_arrays:
+                if fda.getName() == detected_im_name:
+                    im_array = np.array(fda, dtype=np.float32)
+                    break
+
+            if im_array is None or len(im_array) != len(mz_array):
+                continue
+
+            all_mz.append(mz_array)
+            all_im.append(im_array)
+            all_int.append(int_array)
+
+        if not all_mz:
+            self.has_ion_mobility = False
+            self.im_df = None
+            return
+
+        # Concatenate all arrays
+        mz_concat = np.concatenate(all_mz)
+        im_concat = np.concatenate(all_im)
+        int_concat = np.concatenate(all_int)
+
+        # Create DataFrame
+        self.im_df = pd.DataFrame({
+            "mz": mz_concat,
+            "im": im_concat,
+            "intensity": int_concat,
+        })
+        self.im_df["log_intensity"] = np.log1p(self.im_df["intensity"])
+
+        # Set bounds
+        self.im_min = float(self.im_df["im"].min())
+        self.im_max = float(self.im_df["im"].max())
+        self.view_im_min = self.im_min
+        self.view_im_max = self.im_max
+
+        self.has_ion_mobility = True
 
     def _extract_spectrum_data(self) -> list[dict[str, Any]]:
         """Extract spectrum metadata for the unified spectrum table.
@@ -2385,6 +2611,124 @@ class Viewer:
             fig = self.create_tic_plot()
             self.tic_plot.update_figure(fig)
 
+    def create_chromatogram_plot(self) -> go.Figure:
+        """Create a plot showing selected chromatograms."""
+        fig = go.Figure()
+
+        if not self.has_chromatograms or not self.selected_chromatogram_indices:
+            fig.update_layout(
+                title={"text": "Chromatograms - Select from table below", "font": {"color": "#888"}},
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font={"color": "#888"},
+                height=250,
+            )
+            return fig
+
+        # Convert RT to display units
+        rt_divisor = 60.0 if self.rt_in_minutes else 1.0
+        rt_unit = "min" if self.rt_in_minutes else "s"
+
+        # Color palette for multiple chromatograms
+        colors = [
+            "#00d4ff", "#ff6b6b", "#4ecdc4", "#ffe66d", "#95e1d3",
+            "#f38181", "#aa96da", "#fcbad3", "#a8d8ea", "#ffb6b9",
+        ]
+
+        # Plot each selected chromatogram
+        for i, chrom_idx in enumerate(self.selected_chromatogram_indices):
+            if chrom_idx not in self.chromatogram_data:
+                continue
+
+            rt_array, int_array = self.chromatogram_data[chrom_idx]
+            display_rt = rt_array / rt_divisor
+
+            # Find metadata for label
+            chrom_meta = next((c for c in self.chromatograms if c["idx"] == chrom_idx), None)
+            if chrom_meta:
+                # Create a short label
+                native_id = chrom_meta["native_id"]
+                if len(native_id) > 30:
+                    label = native_id[:27] + "..."
+                else:
+                    label = native_id
+            else:
+                label = f"Chrom {chrom_idx}"
+
+            color = colors[i % len(colors)]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=display_rt,
+                    y=int_array,
+                    mode="lines",
+                    name=label,
+                    line={"color": color, "width": 1.5},
+                    hovertemplate=f"{label}<br>RT: %{{x:.2f}}{rt_unit}<br>Intensity: %{{y:.2e}}<extra></extra>",
+                )
+            )
+
+        # Add view range indicator if data is loaded
+        if self.view_rt_min is not None and self.view_rt_max is not None:
+            fig.add_vrect(
+                x0=self.view_rt_min / rt_divisor,
+                x1=self.view_rt_max / rt_divisor,
+                fillcolor="rgba(255, 255, 0, 0.1)",
+                layer="below",
+                line_width=1,
+                line_color="rgba(255, 255, 0, 0.3)",
+            )
+
+        n_selected = len(self.selected_chromatogram_indices)
+        title_text = f"Chromatograms ({n_selected} selected)"
+
+        fig.update_layout(
+            title={"text": title_text, "font": {"size": 14, "color": "#888"}},
+            xaxis_title=f"RT ({rt_unit})",
+            yaxis_title="Intensity",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font={"color": "#888"},
+            height=250,
+            margin={"l": 60, "r": 20, "t": 40, "b": 40},
+            showlegend=True,
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1, "font": {"size": 9}},
+            hovermode="x unified",
+        )
+
+        # Style axes
+        fig.update_xaxes(showgrid=False, linecolor="#888", tickcolor="#888")
+        fig.update_yaxes(showgrid=False, linecolor="#888", tickcolor="#888")
+
+        return fig
+
+    def update_chromatogram_plot(self):
+        """Update the chromatogram plot display."""
+        if self.chromatogram_plot is not None:
+            fig = self.create_chromatogram_plot()
+            self.chromatogram_plot.update_figure(fig)
+
+    def select_chromatogram(self, chrom_idx: int, add: bool = False):
+        """Select a chromatogram for display.
+
+        Args:
+            chrom_idx: Index of chromatogram to select
+            add: If True, add to selection; if False, replace selection
+        """
+        if add:
+            if chrom_idx in self.selected_chromatogram_indices:
+                self.selected_chromatogram_indices.remove(chrom_idx)
+            else:
+                self.selected_chromatogram_indices.append(chrom_idx)
+        else:
+            self.selected_chromatogram_indices = [chrom_idx]
+        self.update_chromatogram_plot()
+
+    def clear_chromatogram_selection(self):
+        """Clear all selected chromatograms."""
+        self.selected_chromatogram_indices = []
+        self.update_chromatogram_plot()
+
     def find_spectrum_idx_at_rt(self, target_rt: float, ms_level: Optional[int] = None) -> Optional[int]:
         """Find the spectrum index closest to the given RT, optionally filtered by MS level."""
         if self.exp is None:
@@ -3153,6 +3497,157 @@ class Viewer:
         buffer.seek(0)
 
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def render_im_image(self) -> str:
+        """Render ion mobility peak map (m/z vs IM) using datashader.
+
+        Returns base64-encoded PNG image string.
+        """
+        if self.im_df is None or len(self.im_df) == 0:
+            return ""
+
+        # Filter to current view bounds
+        mask = (
+            (self.im_df["mz"] >= self.view_mz_min)
+            & (self.im_df["mz"] <= self.view_mz_max)
+            & (self.im_df["im"] >= self.view_im_min)
+            & (self.im_df["im"] <= self.view_im_max)
+        )
+        view_df = self.im_df[mask]
+
+        if len(view_df) == 0:
+            return ""
+
+        # Use same dimensions as main peakmap
+        im_plot_width = self.plot_width
+        im_plot_height = self.plot_height
+
+        # X-axis: m/z, Y-axis: IM
+        ds_canvas = ds.Canvas(
+            plot_width=im_plot_width,
+            plot_height=im_plot_height,
+            x_range=(self.view_mz_min, self.view_mz_max),
+            y_range=(self.view_im_min, self.view_im_max),
+        )
+        agg = ds_canvas.points(view_df, "mz", "im", ds.max("log_intensity"))
+        img = tf.shade(agg, cmap=COLORMAPS[self.colormap], how="linear")
+        img = tf.dynspread(img, threshold=0.5, max_px=3)
+        img = tf.set_background(img, get_colormap_background(self.colormap))
+
+        plot_img = img.to_pil()
+
+        # Create canvas with margins for axes
+        canvas = Image.new("RGBA", (self.canvas_width, self.canvas_height), (0, 0, 0, 0))
+        plot_img_rgba = plot_img.convert("RGBA")
+        canvas.paste(plot_img_rgba, (self.margin_left, self.margin_top))
+
+        # Draw axes
+        canvas = self._draw_im_axes(canvas)
+
+        buffer = io.BytesIO()
+        canvas.save(buffer, format="PNG")
+        buffer.seek(0)
+
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def _draw_im_axes(self, canvas: Image.Image) -> Image.Image:
+        """Draw axes for IM peak map (m/z on X, IM on Y)."""
+        draw = ImageDraw.Draw(canvas)
+
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 14)
+        except OSError:
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf", 12)
+                title_font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf", 14)
+            except OSError:
+                font = ImageFont.load_default()
+                title_font = font
+
+        plot_left = self.margin_left
+        plot_right = self.margin_left + self.plot_width
+        plot_top = self.margin_top
+        plot_bottom = self.margin_top + self.plot_height
+
+        # Draw border
+        draw.rectangle([plot_left, plot_top, plot_right, plot_bottom], outline=self.axis_color, width=1)
+
+        # X-axis: m/z
+        x_ticks = calculate_nice_ticks(self.view_mz_min, self.view_mz_max, num_ticks=8)
+        x_range = self.view_mz_max - self.view_mz_min
+
+        for tick_val in x_ticks:
+            if self.view_mz_min <= tick_val <= self.view_mz_max:
+                x_frac = (tick_val - self.view_mz_min) / x_range
+                x = plot_left + int(x_frac * self.plot_width)
+                draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=self.tick_color, width=1)
+                label = format_tick_label(tick_val, x_range)
+                bbox = draw.textbbox((0, 0), label, font=font)
+                label_width = bbox[2] - bbox[0]
+                draw.text((x - label_width // 2, plot_bottom + 8), label, fill=self.label_color, font=font)
+
+        x_title = "m/z"
+        bbox = draw.textbbox((0, 0), x_title, font=title_font)
+        title_width = bbox[2] - bbox[0]
+        draw.text(
+            (plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+            x_title,
+            fill=self.label_color,
+            font=title_font,
+        )
+
+        # Y-axis: IM
+        y_ticks = calculate_nice_ticks(self.view_im_min, self.view_im_max, num_ticks=8)
+        y_range = self.view_im_max - self.view_im_min
+
+        for tick_val in y_ticks:
+            if self.view_im_min <= tick_val <= self.view_im_max:
+                y_frac = 1 - (tick_val - self.view_im_min) / y_range
+                y = plot_top + int(y_frac * self.plot_height)
+                draw.line([(plot_left - 5, y), (plot_left, y)], fill=self.tick_color, width=1)
+                label = format_tick_label(tick_val, y_range)
+                bbox = draw.textbbox((0, 0), label, font=font)
+                label_width = bbox[2] - bbox[0]
+                label_height = bbox[3] - bbox[1]
+                draw.text(
+                    (plot_left - label_width - 10, y - label_height // 2),
+                    label,
+                    fill=self.label_color,
+                    font=font,
+                )
+
+        # Y-axis title (IM with unit)
+        y_title = f"IM ({self.im_unit})" if self.im_unit else "Ion Mobility"
+
+        # Draw rotated Y-axis title
+        txt_img = Image.new("RGBA", (200, 30), (0, 0, 0, 0))
+        txt_draw = ImageDraw.Draw(txt_img)
+        txt_draw.text((0, 0), y_title, fill=self.label_color, font=title_font)
+        bbox = txt_draw.textbbox((0, 0), y_title, font=title_font)
+        txt_width = bbox[2] - bbox[0]
+        txt_img = txt_img.crop((0, 0, txt_width + 5, 25))
+        txt_img = txt_img.rotate(90, expand=True)
+        y_title_x = 5
+        y_title_y = plot_top + self.plot_height // 2 - txt_img.height // 2
+        canvas.paste(txt_img, (y_title_x, y_title_y), txt_img)
+
+        return canvas
+
+    def update_im_plot(self):
+        """Update the IM peak map display."""
+        if not self.has_ion_mobility or self.im_image_element is None:
+            return
+        img_data = self.render_im_image()
+        if img_data:
+            self.im_image_element.set_source(f"data:image/png;base64,{img_data}")
+
+    def reset_im_view(self):
+        """Reset IM view to full data range."""
+        if self.im_df is not None:
+            self.view_im_min = self.im_min
+            self.view_im_max = self.im_max
+            self.update_im_plot()
 
     def update_faims_plots(self):
         """Update all FAIMS CV peak map panels."""
@@ -4113,6 +4608,40 @@ def create_ui():
                                     viewer.faims_info_label.set_visibility(True)
                                 if viewer.faims_toggle:
                                     viewer.faims_toggle.set_visibility(True)
+                            # Update chromatogram panel
+                            if viewer.has_chromatograms:
+                                if viewer.chromatogram_info_label:
+                                    viewer.chromatogram_info_label.set_text(
+                                        f"Chromatograms: {len(viewer.chromatograms):,}"
+                                    )
+                                if viewer.chromatogram_table is not None:
+                                    viewer.chromatogram_table.rows = viewer.chromatograms
+                                if viewer.chromatogram_expansion is not None:
+                                    viewer.chromatogram_expansion.set_value(True)
+                            else:
+                                if viewer.chromatogram_info_label:
+                                    viewer.chromatogram_info_label.set_text("No chromatograms in file")
+                            # Update ion mobility panel
+                            if viewer.has_ion_mobility:
+                                im_type_name = {
+                                    "inverse_k0": "1/K₀",
+                                    "drift_time": "Drift Time",
+                                    "ion_mobility": "Ion Mobility"
+                                }.get(viewer.im_type, "Ion Mobility")
+                                if viewer.im_info_label:
+                                    viewer.im_info_label.set_text(
+                                        f"{im_type_name}: {len(viewer.im_df):,} peaks"
+                                    )
+                                if viewer.im_range_label:
+                                    viewer.im_range_label.set_text(
+                                        f"IM: {viewer.im_min:.3f} - {viewer.im_max:.3f} {viewer.im_unit}"
+                                    )
+                                viewer.update_im_plot()
+                                if viewer.im_expansion is not None:
+                                    viewer.im_expansion.set_value(True)
+                            else:
+                                if viewer.im_info_label:
+                                    viewer.im_info_label.set_text("No ion mobility data")
                             ui.notify(f"Loaded {len(viewer.df):,} peaks from {original_name}", type="positive")
                         else:
                             ui.notify(f"Failed to load {original_name}", type="negative")
@@ -4160,7 +4689,155 @@ def create_ui():
                     except Exception:
                         pass
 
+            async def open_native_file_dialog():
+                """Open native file dialog to select files directly from filesystem.
+
+                Only available in native mode (--native flag). Uses pywebview's
+                create_file_dialog() to show a native OS file picker.
+                """
+                # Check if running in native mode
+                if not app.native.main_window:
+                    ui.notify("Native file dialog is only available in native mode (--native)", type="warning")
+                    return
+
+                try:
+                    # Open file dialog with filters for supported file types
+                    files = await app.native.main_window.create_file_dialog(
+                        allow_multiple=True,
+                        file_types=(
+                            "Mass Spec Files (*.mzML;*.featureXML;*.idXML)",
+                            "mzML Files (*.mzML)",
+                            "Feature Files (*.featureXML)",
+                            "ID Files (*.idXML)",
+                            "All Files (*.*)",
+                        ),
+                    )
+
+                    if not files:
+                        return  # User cancelled
+
+                    # Process each selected file
+                    for filepath in files:
+                        filename = Path(filepath).name
+                        ext = Path(filepath).suffix.lower()
+
+                        try:
+                            if ext == ".mzml":
+                                success = await run.io_bound(viewer.load_mzml_sync, filepath)
+                                if success:
+                                    viewer.update_plot()
+                                    viewer.update_tic_plot()
+                                    if viewer.exp and viewer.exp.size() > 0:
+                                        viewer.show_spectrum_in_browser(0)
+                                        if viewer.spectrum_expansion is not None:
+                                            viewer.spectrum_expansion.set_value(True)
+                                        if viewer.tic_expansion is not None:
+                                            viewer.tic_expansion.set_value(True)
+                                        if viewer.spectrum_table_expansion is not None:
+                                            viewer.spectrum_table_expansion.set_value(True)
+                                    info_text = (
+                                        f"Loaded: {filename} | Spectra: {viewer.exp.size():,} | "
+                                        f"Peaks: {len(viewer.df):,}"
+                                    )
+                                    if viewer.has_faims:
+                                        info_text += f" | FAIMS: {len(viewer.faims_cvs)} CVs"
+                                    if viewer.info_label:
+                                        viewer.info_label.set_text(info_text)
+                                    if viewer.spectrum_table is not None:
+                                        viewer.spectrum_table.rows = viewer.spectrum_data
+                                    if viewer.has_faims:
+                                        if viewer.faims_info_label:
+                                            cv_str = ", ".join([f"{cv:.1f}V" for cv in viewer.faims_cvs])
+                                            viewer.faims_info_label.set_text(f"FAIMS CVs: {cv_str}")
+                                            viewer.faims_info_label.set_visibility(True)
+                                        if viewer.faims_toggle:
+                                            viewer.faims_toggle.set_visibility(True)
+                                    # Update chromatogram panel
+                                    if viewer.has_chromatograms:
+                                        if viewer.chromatogram_info_label:
+                                            viewer.chromatogram_info_label.set_text(
+                                                f"Chromatograms: {len(viewer.chromatograms):,}"
+                                            )
+                                        if viewer.chromatogram_table is not None:
+                                            viewer.chromatogram_table.rows = viewer.chromatograms
+                                        if viewer.chromatogram_expansion is not None:
+                                            viewer.chromatogram_expansion.set_value(True)
+                                    else:
+                                        if viewer.chromatogram_info_label:
+                                            viewer.chromatogram_info_label.set_text("No chromatograms in file")
+                                    # Update ion mobility panel
+                                    if viewer.has_ion_mobility:
+                                        im_type_name = {
+                                            "inverse_k0": "1/K₀",
+                                            "drift_time": "Drift Time",
+                                            "ion_mobility": "Ion Mobility"
+                                        }.get(viewer.im_type, "Ion Mobility")
+                                        if viewer.im_info_label:
+                                            viewer.im_info_label.set_text(
+                                                f"{im_type_name}: {len(viewer.im_df):,} peaks"
+                                            )
+                                        if viewer.im_range_label:
+                                            viewer.im_range_label.set_text(
+                                                f"IM: {viewer.im_min:.3f} - {viewer.im_max:.3f} {viewer.im_unit}"
+                                            )
+                                        viewer.update_im_plot()
+                                        if viewer.im_expansion is not None:
+                                            viewer.im_expansion.set_value(True)
+                                    else:
+                                        if viewer.im_info_label:
+                                            viewer.im_info_label.set_text("No ion mobility data")
+                                    ui.notify(f"Loaded {len(viewer.df):,} peaks from {filename}", type="positive")
+                                else:
+                                    ui.notify(f"Failed to load {filename}", type="negative")
+
+                            elif ext == ".featurexml":
+                                success = await run.io_bound(viewer.load_featuremap_sync, filepath)
+                                if success:
+                                    viewer.update_plot()
+                                    if viewer.feature_info_label:
+                                        viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
+                                    if viewer.feature_table is not None:
+                                        viewer.feature_table.rows = viewer.feature_data
+                                    ui.notify(
+                                        f"Loaded {viewer.feature_map.size():,} features from {filename}",
+                                        type="positive",
+                                    )
+
+                            elif ext == ".idxml":
+                                success = await run.io_bound(viewer.load_idxml_sync, filepath)
+                                if success:
+                                    viewer.update_plot()
+                                    n_linked = sum(1 for s in viewer.spectrum_data if s.get("id_idx") is not None)
+                                    if viewer.id_info_label:
+                                        viewer.id_info_label.set_text(f"IDs: {len(viewer.peptide_ids):,} ({n_linked} linked)")
+                                    if viewer.spectrum_table is not None:
+                                        viewer.spectrum_table.rows = viewer.spectrum_data
+                                    ui.notify(
+                                        f"Loaded {len(viewer.peptide_ids):,} IDs ({n_linked} linked) from {filename}",
+                                        type="positive",
+                                    )
+
+                            else:
+                                ui.notify(
+                                    f"Unknown file type: {filename}. Supported: .mzML, .featureXML, .idXML",
+                                    type="warning",
+                                )
+
+                        except Exception as ex:
+                            ui.notify(f"Error loading {filename}: {ex}", type="negative")
+                            viewer.set_loading(False)
+
+                except Exception as ex:
+                    ui.notify(f"File dialog error: {ex}", type="negative")
+
             with ui.row().classes("w-full items-center gap-4"):
+                # Native file dialog button (works in native mode, shows warning in browser mode)
+                ui.button(
+                    "Open Files...",
+                    icon="folder_open",
+                    on_click=open_native_file_dialog,
+                ).props("outline").tooltip("Open files using native file dialog (native mode only)")
+
                 ui.upload(
                     label="Drop mzML, featureXML, or idXML files here",
                     on_upload=handle_upload,
@@ -4337,6 +5014,65 @@ def create_ui():
                     viewer._updating_from_tic = False
 
             viewer.tic_plot.on("plotly_relayout", on_tic_relayout)
+
+        # Chromatograms Panel (for DIA/OpenSWATH/SRM data)
+        viewer.chromatogram_expansion = ui.expansion(
+            "Chromatograms", icon="timeline", value=False
+        ).classes("w-full max-w-[1700px]")
+        viewer.panel_elements["chromatograms"] = viewer.chromatogram_expansion
+        viewer.chromatogram_expansion.move(target_container=viewer.panels_container)
+        with viewer.chromatogram_expansion:
+            with ui.row().classes("w-full items-center gap-2 mb-2"):
+                viewer.chromatogram_info_label = ui.label("No chromatograms loaded").classes("text-sm text-gray-400")
+                ui.element("div").classes("flex-grow")
+
+                def clear_chrom_selection():
+                    viewer.clear_chromatogram_selection()
+                    if viewer.chromatogram_table:
+                        viewer.chromatogram_table.selected = []
+                        viewer.chromatogram_table.update()
+
+                ui.button("Clear Selection", on_click=clear_chrom_selection).props("dense outline size=sm color=grey")
+
+            # Chromatogram plot
+            viewer.chromatogram_plot = ui.plotly(viewer.create_chromatogram_plot()).classes("w-full")
+
+            ui.label("Chromatogram Table (click to select, Ctrl+click to multi-select)").classes(
+                "text-xs text-gray-500 mt-2"
+            )
+
+            # Chromatogram table
+            chrom_columns = [
+                {"name": "idx", "label": "#", "field": "idx", "sortable": True, "align": "left"},
+                {"name": "native_id", "label": "Native ID", "field": "native_id", "sortable": True, "align": "left"},
+                {"name": "precursor_mz", "label": "Q1 (m/z)", "field": "precursor_mz", "sortable": True, "align": "right"},
+                {"name": "product_mz", "label": "Q3 (m/z)", "field": "product_mz", "sortable": True, "align": "right"},
+                {"name": "rt_min", "label": "RT Start", "field": "rt_min", "sortable": True, "align": "right"},
+                {"name": "rt_max", "label": "RT End", "field": "rt_max", "sortable": True, "align": "right"},
+                {"name": "n_points", "label": "Points", "field": "n_points", "sortable": True, "align": "right"},
+                {"name": "max_int", "label": "Max Int", "field": "max_int", "sortable": True, "align": "right"},
+            ]
+
+            def on_chrom_select(e):
+                """Handle chromatogram selection from table."""
+                if e.args and len(e.args) > 0:
+                    selected_rows = e.args
+                    # Get indices of selected chromatograms
+                    viewer.selected_chromatogram_indices = [row["idx"] for row in selected_rows if "idx" in row]
+                    viewer.update_chromatogram_plot()
+
+            viewer.chromatogram_table = (
+                ui.table(
+                    columns=chrom_columns,
+                    rows=viewer.chromatograms,
+                    row_key="idx",
+                    pagination={"rowsPerPage": 15, "sortBy": "idx"},
+                    selection="multiple",
+                    on_select=on_chrom_select,
+                )
+                .classes("w-full")
+                .props('dense flat bordered virtual-scroll')
+            )
 
         # Main visualization area - peak map with spectrum browser overlay (collapsible)
         peakmap_expansion = ui.expansion("2D Peak Map", icon="grid_on", value=False).classes("w-full max-w-[1700px]")
@@ -4878,6 +5614,179 @@ def create_ui():
                             .props("dense size=sm color=grey")
                             .tooltip("Toggle 3D peak view")
                         )
+
+        # Ion Mobility Peak Map Panel (for TIMS, drift tube data)
+        viewer.im_expansion = ui.expansion(
+            "Ion Mobility Map", icon="blur_on", value=False
+        ).classes("w-full max-w-[1700px]")
+        viewer.panel_elements["im_peakmap"] = viewer.im_expansion
+        viewer.im_expansion.move(target_container=viewer.panels_container)
+        with viewer.im_expansion:
+            with ui.row().classes("w-full items-center gap-2 mb-2"):
+                viewer.im_info_label = ui.label("No ion mobility data").classes("text-sm text-gray-400")
+                ui.element("div").classes("flex-grow")
+
+                def reset_im_view_click():
+                    viewer.reset_im_view()
+
+                ui.button("Reset View", icon="home", on_click=reset_im_view_click).props(
+                    "dense outline size=sm"
+                ).tooltip("Reset to full IM range")
+
+            with ui.row().classes("w-full"):
+                # IM range labels
+                viewer.im_range_label = ui.label("IM: --").classes("text-xs text-gray-500")
+
+            # IM peak map image (similar to main peakmap)
+            with ui.column().classes("w-full items-center"):
+                viewer.im_image_element = (
+                    ui.interactive_image()
+                    .style(
+                        f"width: {viewer.canvas_width}px; height: {viewer.canvas_height}px; "
+                        f"background: transparent; cursor: crosshair;"
+                    )
+                    .classes("border border-gray-600")
+                )
+
+                # IM peakmap interaction handlers
+                im_drag_state = {"dragging": False, "start_x": 0, "start_y": 0}
+
+                def on_im_mousedown(e):
+                    try:
+                        offset_x = e.args.get("offsetX", 0)
+                        offset_y = e.args.get("offsetY", 0)
+                        im_drag_state["dragging"] = True
+                        im_drag_state["start_x"] = offset_x
+                        im_drag_state["start_y"] = offset_y
+                    except Exception:
+                        pass
+
+                def on_im_mouseup(e):
+                    try:
+                        if not im_drag_state["dragging"]:
+                            return
+                        im_drag_state["dragging"] = False
+
+                        offset_x = e.args.get("offsetX", 0)
+                        offset_y = e.args.get("offsetY", 0)
+                        start_x = im_drag_state["start_x"]
+                        start_y = im_drag_state["start_y"]
+
+                        # Check if it's a significant drag (zoom selection)
+                        dx = abs(offset_x - start_x)
+                        dy = abs(offset_y - start_y)
+                        if dx < 5 and dy < 5:
+                            viewer.im_image_element.content = ""
+                            return
+
+                        # Convert to data coordinates (X: m/z, Y: IM)
+                        x1_frac = (min(start_x, offset_x) - viewer.margin_left) / viewer.plot_width
+                        x2_frac = (max(start_x, offset_x) - viewer.margin_left) / viewer.plot_width
+                        y1_frac = (min(start_y, offset_y) - viewer.margin_top) / viewer.plot_height
+                        y2_frac = (max(start_y, offset_y) - viewer.margin_top) / viewer.plot_height
+
+                        x1_frac = max(0, min(1, x1_frac))
+                        x2_frac = max(0, min(1, x2_frac))
+                        y1_frac = max(0, min(1, y1_frac))
+                        y2_frac = max(0, min(1, y2_frac))
+
+                        # Calculate new view bounds
+                        mz_range = viewer.view_mz_max - viewer.view_mz_min
+                        im_range = viewer.view_im_max - viewer.view_im_min
+
+                        new_mz_min = viewer.view_mz_min + x1_frac * mz_range
+                        new_mz_max = viewer.view_mz_min + x2_frac * mz_range
+                        new_im_max = viewer.view_im_max - y1_frac * im_range  # Y is inverted
+                        new_im_min = viewer.view_im_max - y2_frac * im_range
+
+                        # Apply new bounds
+                        viewer.view_mz_min = new_mz_min
+                        viewer.view_mz_max = new_mz_max
+                        viewer.view_im_min = new_im_min
+                        viewer.view_im_max = new_im_max
+
+                        viewer.im_image_element.content = ""
+                        viewer.update_im_plot()
+                        if viewer.im_range_label:
+                            viewer.im_range_label.set_text(
+                                f"IM: {viewer.view_im_min:.3f} - {viewer.view_im_max:.3f} {viewer.im_unit}"
+                            )
+
+                    except Exception:
+                        pass
+
+                def on_im_mousemove(e):
+                    try:
+                        offset_x = e.args.get("offsetX", 0)
+                        offset_y = e.args.get("offsetY", 0)
+
+                        # Draw selection rectangle while dragging
+                        if im_drag_state["dragging"]:
+                            start_x = im_drag_state["start_x"]
+                            start_y = im_drag_state["start_y"]
+                            rect_x = min(start_x, offset_x)
+                            rect_y = min(start_y, offset_y)
+                            rect_w = abs(offset_x - start_x)
+                            rect_h = abs(offset_y - start_y)
+                            viewer.im_image_element.content = (
+                                f'<rect x="{rect_x}" y="{rect_y}" width="{rect_w}" height="{rect_h}" '
+                                f'fill="rgba(255,255,0,0.15)" stroke="rgba(255,255,0,0.5)" stroke-width="1"/>'
+                            )
+                    except Exception:
+                        pass
+
+                def on_im_dblclick(e):
+                    viewer.reset_im_view()
+
+                def on_im_wheel(e):
+                    try:
+                        offset_x = e.args.get("offsetX", 0)
+                        offset_y = e.args.get("offsetY", 0)
+                        delta_y = e.args.get("deltaY", 0)
+
+                        x_in_plot = viewer.margin_left <= offset_x <= viewer.margin_left + viewer.plot_width
+                        y_in_plot = viewer.margin_top <= offset_y <= viewer.margin_top + viewer.plot_height
+
+                        if x_in_plot and y_in_plot:
+                            x_frac = (offset_x - viewer.margin_left) / viewer.plot_width
+                            y_frac = (offset_y - viewer.margin_top) / viewer.plot_height
+                            zoom_in = delta_y < 0
+
+                            # Zoom at cursor position
+                            factor = 0.8 if zoom_in else 1.25
+                            mz_range = viewer.view_mz_max - viewer.view_mz_min
+                            im_range = viewer.view_im_max - viewer.view_im_min
+
+                            cursor_mz = viewer.view_mz_min + x_frac * mz_range
+                            cursor_im = viewer.view_im_max - y_frac * im_range
+
+                            new_mz_range = mz_range * factor
+                            new_im_range = im_range * factor
+
+                            viewer.view_mz_min = cursor_mz - x_frac * new_mz_range
+                            viewer.view_mz_max = cursor_mz + (1 - x_frac) * new_mz_range
+                            viewer.view_im_min = cursor_im - (1 - y_frac) * new_im_range
+                            viewer.view_im_max = cursor_im + y_frac * new_im_range
+
+                            # Clamp to data bounds
+                            viewer.view_mz_min = max(viewer.mz_min, viewer.view_mz_min)
+                            viewer.view_mz_max = min(viewer.mz_max, viewer.view_mz_max)
+                            viewer.view_im_min = max(viewer.im_min, viewer.view_im_min)
+                            viewer.view_im_max = min(viewer.im_max, viewer.view_im_max)
+
+                            viewer.update_im_plot()
+                            if viewer.im_range_label:
+                                viewer.im_range_label.set_text(
+                                    f"IM: {viewer.view_im_min:.3f} - {viewer.view_im_max:.3f} {viewer.im_unit}"
+                                )
+                    except Exception:
+                        pass
+
+                viewer.im_image_element.on("mousedown", on_im_mousedown)
+                viewer.im_image_element.on("mouseup", on_im_mouseup)
+                viewer.im_image_element.on("mousemove", on_im_mousemove)
+                viewer.im_image_element.on("dblclick", on_im_dblclick)
+                viewer.im_image_element.on("wheel.prevent", on_im_wheel)
 
         # 1D Spectrum Browser (collapsible panel, starts collapsed until file is loaded)
         viewer.spectrum_expansion = ui.expansion("1D Spectrum", icon="show_chart", value=False).classes(
@@ -5680,88 +6589,154 @@ def create_ui():
 
                 ui.button("Apply Range", on_click=apply_range).props("color=primary")
 
-        # Legend
-        viewer.legend_expansion = ui.expansion("Legend & Help", icon="help").classes("w-full max-w-[1700px]")
+        # Help panel
+        viewer.legend_expansion = ui.expansion("Help", icon="help").classes("w-full max-w-[1700px]")
         viewer.panel_elements["legend"] = viewer.legend_expansion
         viewer.legend_expansion.move(target_container=viewer.panels_container)
         with viewer.legend_expansion:
-            with ui.row().classes("gap-8 flex-wrap"):
-                with ui.column():
-                    ui.label("Overlay Colors:").classes("font-semibold")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html(
-                            '<div style="width:16px;height:16px;background:#00ff64;border-radius:50%;border:1px solid white;"></div>',
-                            sanitize=False,
-                        )
-                        ui.label("Feature Centroid")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:16px;height:16px;border:2px solid #ffff00;"></div>', sanitize=False)
-                        ui.label("Feature Bounding Box")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html(
-                            '<div style="width:16px;height:16px;background:rgba(0,200,255,0.5);border:1px solid #00c8ff;"></div>',
-                            sanitize=False,
-                        )
-                        ui.label("Feature Convex Hull")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html(
-                            '<div style="width:16px;height:16px;background:#ff9632;transform:rotate(45deg);"></div>',
-                            sanitize=False,
-                        )
-                        ui.label("ID Precursor Position")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html(
-                            '<div style="width:16px;height:16px;background:#ff64ff;border-radius:50%;"></div>',
-                            sanitize=False,
-                        )
-                        ui.label("Selected Item")
-
-                with ui.column():
-                    ui.label("Spectrum Annotation:").classes("font-semibold")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:16px;height:16px;background:#1f77b4;"></div>', sanitize=False)
-                        ui.label("b-ions (blue)")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:16px;height:16px;background:#d62728;"></div>', sanitize=False)
-                        ui.label("y-ions (red)")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:16px;height:16px;background:gray;"></div>', sanitize=False)
-                        ui.label("Unmatched peaks")
-
-                with ui.column():
-                    ui.label("TIC & Spectra:").classes("font-semibold")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:16px;height:4px;background:#00d4ff;"></div>', sanitize=False)
-                        ui.label("TIC trace")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html(
-                            '<div style="width:16px;height:16px;background:rgba(255,255,0,0.2);border:1px solid rgba(255,255,0,0.5);"></div>',
-                            sanitize=False,
-                        )
-                        ui.label("Current view range")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:16px;height:16px;background:#00ff64;"></div>', sanitize=False)
-                        ui.label("MS1 spectrum peaks")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:2px;height:16px;background:#00d4ff;"></div>', sanitize=False)
-                        ui.label("MS1 spectrum marker (cyan)")
-                    with ui.row().classes("items-center gap-2"):
-                        ui.html('<div style="width:2px;height:16px;background:#ff6b6b;"></div>', sanitize=False)
-                        ui.label("MS2 spectrum marker (red)")
-
-                with ui.column():
-                    ui.label("Keyboard & Mouse:").classes("font-semibold")
+            with ui.row().classes("gap-6 flex-wrap w-full"):
+                # Keyboard Shortcuts
+                with ui.card().classes("p-3").style("min-width: 280px;"):
+                    ui.label("⌨️ Keyboard Shortcuts").classes("font-bold text-lg mb-2")
                     ui.markdown("""
-| Input | Action |
-|-------|--------|
-| `+` / `=` | Zoom In |
-| `-` | Zoom Out |
-| `Arrow Keys` | Pan |
-| `Home` | Reset View |
-| `Drag` | Zoom to selection |
-| `Shift+Drag` | Measure distance |
-| `Ctrl+Drag` | Pan (grab & move) |
-                    """)
+| Key | Action |
+|-----|--------|
+| `+` or `=` | Zoom in |
+| `-` | Zoom out |
+| `←` `→` | Pan left/right (RT) |
+| `↑` `↓` | Pan up/down (m/z) |
+| `Home` | Reset to full view |
+| `Delete` | Delete selected measurement |
+| `F11` | Toggle fullscreen |
+""").classes("text-sm")
+
+                # Mouse Controls
+                with ui.card().classes("p-3").style("min-width: 280px;"):
+                    ui.label("🖱️ Mouse Controls").classes("font-bold text-lg mb-2")
+                    ui.markdown("""
+| Action | Effect |
+|--------|--------|
+| **Scroll wheel** | Zoom in/out at cursor |
+| **Drag** | Select region to zoom |
+| **Shift + Drag** | Measure distance (ΔRT, Δm/z) |
+| **Ctrl + Drag** | Pan (grab & move) |
+| **Double-click** | Reset to full view |
+| **Click TIC** | Jump to spectrum at RT |
+| **Click table row** | Select spectrum/feature |
+""").classes("text-sm")
+
+                # 1D Spectrum Controls
+                with ui.card().classes("p-3").style("min-width: 280px;"):
+                    ui.label("📊 1D Spectrum Tools").classes("font-bold text-lg mb-2")
+                    ui.markdown("""
+| Tool | Usage |
+|------|-------|
+| **📏 Measure** | Click two peaks to measure Δm/z |
+| **🏷️ Label** | Click peak to add custom annotation |
+| **m/z Labels** | Toggle to show all peak m/z values |
+| **Auto Y** | Auto-scale Y-axis to visible peaks |
+| **Navigation** | `< >` prev/next, `MS1`/`MS2` by level |
+| **3D View** | Toggle 3D surface visualization |
+""").classes("text-sm")
+
+                # Overlay Colors
+                with ui.card().classes("p-3").style("min-width: 220px;"):
+                    ui.label("🎨 Overlay Colors").classes("font-bold text-lg mb-2")
+                    with ui.column().classes("gap-1"):
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html(
+                                '<div style="width:14px;height:14px;background:#00ff64;border-radius:50%;'
+                                'border:1px solid white;"></div>',
+                                sanitize=False,
+                            )
+                            ui.label("Feature Centroid").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html(
+                                '<div style="width:14px;height:14px;border:2px solid #ffff00;"></div>',
+                                sanitize=False,
+                            )
+                            ui.label("Feature Bounding Box").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html(
+                                '<div style="width:14px;height:14px;background:rgba(0,200,255,0.5);'
+                                'border:1px solid #00c8ff;"></div>',
+                                sanitize=False,
+                            )
+                            ui.label("Feature Convex Hull").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html(
+                                '<div style="width:14px;height:14px;background:#ff9632;'
+                                'transform:rotate(45deg);"></div>',
+                                sanitize=False,
+                            )
+                            ui.label("ID Precursor (◆)").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html(
+                                '<div style="width:14px;height:14px;background:#ff64ff;border-radius:50%;"></div>',
+                                sanitize=False,
+                            )
+                            ui.label("Selected Item").classes("text-sm")
+
+                # Ion Colors
+                with ui.card().classes("p-3").style("min-width: 180px;"):
+                    ui.label("🔬 Ion Annotations").classes("font-bold text-lg mb-2")
+                    with ui.column().classes("gap-1"):
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:14px;height:14px;background:#1f77b4;"></div>', sanitize=False)
+                            ui.label("b-ions").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:14px;height:14px;background:#d62728;"></div>', sanitize=False)
+                            ui.label("y-ions").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:14px;height:14px;background:#2ca02c;"></div>', sanitize=False)
+                            ui.label("a-ions").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:14px;height:14px;background:#ff7f0e;"></div>', sanitize=False)
+                            ui.label("Precursor").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:14px;height:14px;background:#7f7f7f;"></div>', sanitize=False)
+                            ui.label("Unmatched").classes("text-sm")
+
+                # TIC & Markers
+                with ui.card().classes("p-3").style("min-width: 200px;"):
+                    ui.label("📈 TIC & Markers").classes("font-bold text-lg mb-2")
+                    with ui.column().classes("gap-1"):
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:20px;height:3px;background:#00d4ff;"></div>', sanitize=False)
+                            ui.label("TIC trace").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html(
+                                '<div style="width:14px;height:14px;background:rgba(255,255,0,0.2);'
+                                'border:1px solid rgba(255,255,0,0.6);"></div>',
+                                sanitize=False,
+                            )
+                            ui.label("Current view").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:3px;height:14px;background:#00d4ff;"></div>', sanitize=False)
+                            ui.label("MS1 marker").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:3px;height:14px;background:#ff6b6b;"></div>', sanitize=False)
+                            ui.label("MS2 marker").classes("text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.html('<div style="width:14px;height:14px;background:#00ff64;"></div>', sanitize=False)
+                            ui.label("Spectrum peaks").classes("text-sm")
+
+                # File Types
+                with ui.card().classes("p-3").style("min-width: 200px;"):
+                    ui.label("📁 Supported Files").classes("font-bold text-lg mb-2")
+                    ui.markdown("""
+| Extension | Content |
+|-----------|---------|
+| `.mzML` | MS peak data |
+| `.featureXML` | Detected features |
+| `.idXML` | Peptide IDs |
+""").classes("text-sm")
+                    ui.label("Tips:").classes("font-semibold mt-2 text-sm")
+                    ui.markdown("""
+- Drag & drop files to load
+- Use `--native` for file dialog
+- Load multiple files at once
+""").classes("text-xs text-gray-400")
 
         # Keyboard handlers
         def on_global_key(e):
