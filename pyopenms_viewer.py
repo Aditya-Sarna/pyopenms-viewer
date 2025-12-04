@@ -262,6 +262,174 @@ def annotate_spectrum_with_id(
     return annotations
 
 
+def get_external_peak_annotations(
+    peptide_hit,
+    exp_mz: np.ndarray,
+    tolerance_da: float = 0.05,
+) -> list[tuple[int, str, str]]:
+    """Get external peak annotations from a PeptideHit using getPeakAnnotations() API.
+
+    This uses the pyOpenMS PeptideHit.getPeakAnnotations() method which returns
+    pre-parsed PeakAnnotation objects from idXML fragment_annotation data.
+
+    Args:
+        peptide_hit: PeptideHit object with peak annotations
+        exp_mz: Experimental m/z array to match annotations to peak indices
+        tolerance_da: Mass tolerance in Da for matching annotations to peaks
+
+    Returns:
+        List of (peak_index, ion_name, ion_type) for matched annotations
+    """
+    annotations = []
+
+    if len(exp_mz) == 0:
+        return annotations
+
+    try:
+        peak_annotations = peptide_hit.getPeakAnnotations()
+
+        if not peak_annotations:
+            return annotations
+
+        for peak_ann in peak_annotations:
+            ann_mz = peak_ann.mz
+            ion_name = peak_ann.annotation
+
+            # Handle bytes if needed
+            if isinstance(ion_name, bytes):
+                ion_name = ion_name.decode("utf-8", errors="ignore")
+
+            # Find closest experimental peak within tolerance
+            diffs = np.abs(exp_mz - ann_mz)
+            min_idx = np.argmin(diffs)
+            if diffs[min_idx] <= tolerance_da:
+                # Determine ion type from name
+                ion_name_lower = ion_name.lower()
+                if ion_name_lower.startswith("y"):
+                    ion_type = "y"
+                elif ion_name_lower.startswith("b"):
+                    ion_type = "b"
+                elif ion_name_lower.startswith("a"):
+                    ion_type = "a"
+                elif ion_name_lower.startswith("c"):
+                    ion_type = "c"
+                elif ion_name_lower.startswith("x"):
+                    ion_type = "x"
+                elif ion_name_lower.startswith("z"):
+                    ion_type = "z"
+                elif "mi:" in ion_name_lower or ion_name_lower.startswith("i"):
+                    ion_type = "unknown"  # Immonium ions
+                elif "[m" in ion_name_lower:
+                    ion_type = "precursor"  # Precursor-related ions
+                else:
+                    ion_type = "unknown"
+
+                annotations.append((int(min_idx), ion_name, ion_type))
+
+    except Exception as e:
+        print(f"Error getting external peak annotations: {e}")
+
+    return annotations
+
+
+def parse_external_fragment_annotations(
+    fragment_annotation_str: str,
+    exp_mz: np.ndarray,
+    tolerance_da: float = 0.05,
+) -> list[tuple[int, str, str]]:
+    """Parse external fragment annotations from idXML fragment_annotation UserParam string.
+
+    This is a fallback for when getPeakAnnotations() is not available.
+    The format is pipe-separated: m/z,intensity,charge,"ion_name"|...
+    Example: '201.087,1.0,1,"b2+"|712.362,0.394,1,"y5+U'-H2O+"'
+
+    Args:
+        fragment_annotation_str: The fragment_annotation string from idXML
+        exp_mz: Experimental m/z array to match annotations to peak indices
+        tolerance_da: Mass tolerance in Da for matching annotations to peaks
+
+    Returns:
+        List of (peak_index, ion_name, ion_type) for matched annotations
+    """
+    annotations = []
+
+    if not fragment_annotation_str or len(exp_mz) == 0:
+        return annotations
+
+    try:
+        # Split by pipe to get individual annotations
+        parts = fragment_annotation_str.split("|")
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            try:
+                # Find opening quote for ion name
+                quote_start = part.find('"')
+                if quote_start == -1:
+                    # Try without quotes
+                    fields = part.split(",")
+                    if len(fields) >= 4:
+                        ann_mz = float(fields[0])
+                        ion_name = fields[3].strip("'\"")
+                    else:
+                        continue
+                else:
+                    # Extract the prefix (m/z,intensity,charge,) and quoted ion name
+                    prefix = part[:quote_start].rstrip(",")
+                    fields = prefix.split(",")
+                    if len(fields) < 3:
+                        continue
+                    ann_mz = float(fields[0])
+
+                    # Extract ion name from quotes
+                    quote_end = part.rfind('"')
+                    if quote_end > quote_start:
+                        ion_name = part[quote_start + 1 : quote_end]
+                    else:
+                        ion_name = part[quote_start + 1 :]
+
+                # Clean up ion name
+                ion_name = ion_name.replace("&quot;", '"').replace("&apos;", "'").strip()
+
+                # Find closest experimental peak within tolerance
+                diffs = np.abs(exp_mz - ann_mz)
+                min_idx = np.argmin(diffs)
+                if diffs[min_idx] <= tolerance_da:
+                    # Determine ion type from name
+                    ion_name_lower = ion_name.lower()
+                    if ion_name_lower.startswith("y"):
+                        ion_type = "y"
+                    elif ion_name_lower.startswith("b"):
+                        ion_type = "b"
+                    elif ion_name_lower.startswith("a"):
+                        ion_type = "a"
+                    elif ion_name_lower.startswith("c"):
+                        ion_type = "c"
+                    elif ion_name_lower.startswith("x"):
+                        ion_type = "x"
+                    elif ion_name_lower.startswith("z"):
+                        ion_type = "z"
+                    elif "mi:" in ion_name_lower or ion_name_lower.startswith("i"):
+                        ion_type = "unknown"
+                    elif "[m" in ion_name_lower:
+                        ion_type = "precursor"
+                    else:
+                        ion_type = "unknown"
+
+                    annotations.append((int(min_idx), ion_name, ion_type))
+
+            except (ValueError, IndexError):
+                continue
+
+    except Exception as e:
+        print(f"Error parsing external fragment annotations: {e}")
+
+    return annotations
+
+
 def create_annotated_spectrum_plot(
     exp_mz: np.ndarray,
     exp_int: np.ndarray,
@@ -1665,9 +1833,16 @@ class Viewer:
                 # Get peak annotations if enabled
                 peak_annotations = None
                 if self.annotate_peaks:
-                    peak_annotations = annotate_spectrum_with_id(
-                        spec, best_hit, tolerance_da=self.annotation_tolerance_da
+                    # First check for external peak annotations (from specialized tools like OpenNuXL)
+                    peak_annotations = get_external_peak_annotations(
+                        best_hit, mz_array, tolerance_da=self.annotation_tolerance_da
                     )
+
+                    if not peak_annotations:
+                        # Fall back to generating annotations with SpectrumAnnotator
+                        peak_annotations = annotate_spectrum_with_id(
+                            spec, best_hit, tolerance_da=self.annotation_tolerance_da
+                        )
 
                 # Create annotated spectrum plot
                 fig = create_annotated_spectrum_plot(
