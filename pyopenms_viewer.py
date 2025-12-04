@@ -262,6 +262,174 @@ def annotate_spectrum_with_id(
     return annotations
 
 
+def get_external_peak_annotations(
+    peptide_hit,
+    exp_mz: np.ndarray,
+    tolerance_da: float = 0.05,
+) -> list[tuple[int, str, str]]:
+    """Get external peak annotations from a PeptideHit using getPeakAnnotations() API.
+
+    This uses the pyOpenMS PeptideHit.getPeakAnnotations() method which returns
+    pre-parsed PeakAnnotation objects from idXML fragment_annotation data.
+
+    Args:
+        peptide_hit: PeptideHit object with peak annotations
+        exp_mz: Experimental m/z array to match annotations to peak indices
+        tolerance_da: Mass tolerance in Da for matching annotations to peaks
+
+    Returns:
+        List of (peak_index, ion_name, ion_type) for matched annotations
+    """
+    annotations = []
+
+    if len(exp_mz) == 0:
+        return annotations
+
+    try:
+        peak_annotations = peptide_hit.getPeakAnnotations()
+
+        if not peak_annotations:
+            return annotations
+
+        for peak_ann in peak_annotations:
+            ann_mz = peak_ann.mz
+            ion_name = peak_ann.annotation
+
+            # Handle bytes if needed
+            if isinstance(ion_name, bytes):
+                ion_name = ion_name.decode("utf-8", errors="ignore")
+
+            # Find closest experimental peak within tolerance
+            diffs = np.abs(exp_mz - ann_mz)
+            min_idx = np.argmin(diffs)
+            if diffs[min_idx] <= tolerance_da:
+                # Determine ion type from name
+                ion_name_lower = ion_name.lower()
+                if ion_name_lower.startswith("y"):
+                    ion_type = "y"
+                elif ion_name_lower.startswith("b"):
+                    ion_type = "b"
+                elif ion_name_lower.startswith("a"):
+                    ion_type = "a"
+                elif ion_name_lower.startswith("c"):
+                    ion_type = "c"
+                elif ion_name_lower.startswith("x"):
+                    ion_type = "x"
+                elif ion_name_lower.startswith("z"):
+                    ion_type = "z"
+                elif "mi:" in ion_name_lower or ion_name_lower.startswith("i"):
+                    ion_type = "unknown"  # Immonium ions
+                elif "[m" in ion_name_lower:
+                    ion_type = "precursor"  # Precursor-related ions
+                else:
+                    ion_type = "unknown"
+
+                annotations.append((int(min_idx), ion_name, ion_type))
+
+    except Exception as e:
+        print(f"Error getting external peak annotations: {e}")
+
+    return annotations
+
+
+def parse_external_fragment_annotations(
+    fragment_annotation_str: str,
+    exp_mz: np.ndarray,
+    tolerance_da: float = 0.05,
+) -> list[tuple[int, str, str]]:
+    """Parse external fragment annotations from idXML fragment_annotation UserParam string.
+
+    This is a fallback for when getPeakAnnotations() is not available.
+    The format is pipe-separated: m/z,intensity,charge,"ion_name"|...
+    Example: '201.087,1.0,1,"b2+"|712.362,0.394,1,"y5+U'-H2O+"'
+
+    Args:
+        fragment_annotation_str: The fragment_annotation string from idXML
+        exp_mz: Experimental m/z array to match annotations to peak indices
+        tolerance_da: Mass tolerance in Da for matching annotations to peaks
+
+    Returns:
+        List of (peak_index, ion_name, ion_type) for matched annotations
+    """
+    annotations = []
+
+    if not fragment_annotation_str or len(exp_mz) == 0:
+        return annotations
+
+    try:
+        # Split by pipe to get individual annotations
+        parts = fragment_annotation_str.split("|")
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            try:
+                # Find opening quote for ion name
+                quote_start = part.find('"')
+                if quote_start == -1:
+                    # Try without quotes
+                    fields = part.split(",")
+                    if len(fields) >= 4:
+                        ann_mz = float(fields[0])
+                        ion_name = fields[3].strip("'\"")
+                    else:
+                        continue
+                else:
+                    # Extract the prefix (m/z,intensity,charge,) and quoted ion name
+                    prefix = part[:quote_start].rstrip(",")
+                    fields = prefix.split(",")
+                    if len(fields) < 3:
+                        continue
+                    ann_mz = float(fields[0])
+
+                    # Extract ion name from quotes
+                    quote_end = part.rfind('"')
+                    if quote_end > quote_start:
+                        ion_name = part[quote_start + 1 : quote_end]
+                    else:
+                        ion_name = part[quote_start + 1 :]
+
+                # Clean up ion name
+                ion_name = ion_name.replace("&quot;", '"').replace("&apos;", "'").strip()
+
+                # Find closest experimental peak within tolerance
+                diffs = np.abs(exp_mz - ann_mz)
+                min_idx = np.argmin(diffs)
+                if diffs[min_idx] <= tolerance_da:
+                    # Determine ion type from name
+                    ion_name_lower = ion_name.lower()
+                    if ion_name_lower.startswith("y"):
+                        ion_type = "y"
+                    elif ion_name_lower.startswith("b"):
+                        ion_type = "b"
+                    elif ion_name_lower.startswith("a"):
+                        ion_type = "a"
+                    elif ion_name_lower.startswith("c"):
+                        ion_type = "c"
+                    elif ion_name_lower.startswith("x"):
+                        ion_type = "x"
+                    elif ion_name_lower.startswith("z"):
+                        ion_type = "z"
+                    elif "mi:" in ion_name_lower or ion_name_lower.startswith("i"):
+                        ion_type = "unknown"
+                    elif "[m" in ion_name_lower:
+                        ion_type = "precursor"
+                    else:
+                        ion_type = "unknown"
+
+                    annotations.append((int(min_idx), ion_name, ion_type))
+
+            except (ValueError, IndexError):
+                continue
+
+    except Exception as e:
+        print(f"Error parsing external fragment annotations: {e}")
+
+    return annotations
+
+
 def create_annotated_spectrum_plot(
     exp_mz: np.ndarray,
     exp_int: np.ndarray,
@@ -271,6 +439,7 @@ def create_annotated_spectrum_plot(
     tolerance_da: float = 0.5,
     peak_annotations: Optional[list[tuple[int, str, str]]] = None,
     annotate: bool = True,
+    mirror_mode: bool = False,
 ) -> go.Figure:
     """Create an annotated spectrum plot using Plotly.
 
@@ -283,6 +452,7 @@ def create_annotated_spectrum_plot(
         tolerance_da: Mass tolerance in Da for matching (used if no peak_annotations)
         peak_annotations: Optional list of (peak_index, ion_name, ion_type) from SpectrumAnnotator
         annotate: Whether to show annotations (if False, shows raw spectrum)
+        mirror_mode: If True, flip annotated peaks downward for comparison view
     """
 
     # Normalize intensities to percentage
@@ -354,6 +524,7 @@ def create_annotated_spectrum_plot(
                 pass
 
         # Add matched peaks as colored lines grouped by ion type
+        # In mirror mode, flip annotated peaks downward (negative y values)
         for ion_type, peaks in matched_peaks.items():
             if not peaks:
                 continue
@@ -364,7 +535,10 @@ def create_annotated_spectrum_plot(
             y_ions = []
             for peak in peaks:
                 x_ions.extend([peak["mz"], peak["mz"], None])
-                y_ions.extend([0, peak["intensity"], None])
+                if mirror_mode:
+                    y_ions.extend([0, -peak["intensity"], None])
+                else:
+                    y_ions.extend([0, peak["intensity"], None])
 
             fig.add_trace(
                 go.Scatter(
@@ -379,10 +553,11 @@ def create_annotated_spectrum_plot(
 
             # Add hover points and annotations for matched peaks
             for peak in peaks:
+                y_val = -peak["intensity"] if mirror_mode else peak["intensity"]
                 fig.add_trace(
                     go.Scatter(
                         x=[peak["mz"]],
-                        y=[peak["intensity"]],
+                        y=[y_val],
                         mode="markers",
                         marker={"color": color, "size": 4},
                         showlegend=False,
@@ -390,14 +565,20 @@ def create_annotated_spectrum_plot(
                     )
                 )
 
-                # Add text annotation
+                # Add text annotation (below peak in mirror mode)
+                if mirror_mode:
+                    text_y = y_val - 3
+                    text_angle = 45  # Flip angle for readability
+                else:
+                    text_y = peak["intensity"] + 3
+                    text_angle = -45
                 fig.add_annotation(
                     x=peak["mz"],
-                    y=peak["intensity"] + 3,
+                    y=text_y,
                     text=peak["label"],
                     showarrow=False,
                     font={"size": 9, "color": color},
-                    textangle=-45,
+                    textangle=text_angle,
                 )
 
     # Add precursor marker
@@ -426,13 +607,30 @@ def create_annotated_spectrum_plot(
         linecolor="#888",
         tickcolor="#888",
     )
-    fig.update_yaxes(
-        range=[0, 110],
-        showgrid=False,
-        fixedrange=True,
-        linecolor="#888",
-        tickcolor="#888",
-    )
+
+    if mirror_mode:
+        # Symmetric y-axis for mirror view with zero line
+        fig.update_yaxes(
+            range=[-110, 110],
+            showgrid=False,
+            fixedrange=True,
+            linecolor="#888",
+            tickcolor="#888",
+            zeroline=True,
+            zerolinecolor="#888",
+            zerolinewidth=1,
+            # Show absolute values on tick labels
+            tickvals=[-100, -50, 0, 50, 100],
+            ticktext=["100", "50", "0", "50", "100"],
+        )
+    else:
+        fig.update_yaxes(
+            range=[0, 110],
+            showgrid=False,
+            fixedrange=True,
+            linecolor="#888",
+            tickcolor="#888",
+        )
 
     return fig
 
@@ -563,6 +761,7 @@ class Viewer:
         self.spectrum_auto_scale = False  # Auto-scale y-axis to fit visible peaks
         self.annotate_peaks = True  # Annotate peaks in spectrum view when ID is selected
         self.annotation_tolerance_da = 0.05  # Mass tolerance for peak annotation in Da
+        self.mirror_annotation_view = False  # Mirror mode: flip annotated peaks downward for comparison
         self.show_all_hits = False  # Show all peptide hits, not just the best hit
 
         # Colors
@@ -679,6 +878,18 @@ class Viewer:
         ]
         self.panel_elements = {}  # Dict: panel_id -> expansion element
         self.panels_container = None  # Column container holding all panels
+        # Panel visibility: True = always show, False = always hide, "auto" = show only when data exists
+        self.panel_visibility = {
+            "tic": True,  # Always show
+            "chromatograms": "auto",  # Show only when chromatograms exist
+            "peakmap": True,  # Always show
+            "im_peakmap": "auto",  # Show only when ion mobility data exists
+            "spectrum": True,  # Always show
+            "spectra_table": True,  # Always show
+            "features_table": "auto",  # Show only when features loaded
+            "custom_range": True,  # Always show
+            "legend": True,  # Always show
+        }
 
         # NiceGUI 3.x: Event callbacks for state management
         # These allow UI components to subscribe to state changes
@@ -721,6 +932,52 @@ class Viewer:
                 callback(selection_type, index, self)
             except Exception:
                 pass
+
+    def should_panel_be_visible(self, panel_id: str) -> bool:
+        """Determine if a panel should be visible based on visibility setting and data availability.
+
+        Args:
+            panel_id: The panel identifier (e.g., "tic", "im_peakmap", "chromatograms")
+
+        Returns:
+            True if panel should be visible, False otherwise
+        """
+        visibility = self.panel_visibility.get(panel_id, True)
+
+        if visibility is True:
+            return True
+        elif visibility is False:
+            return False
+        elif visibility == "auto":
+            # Auto-visibility based on data availability
+            if panel_id == "im_peakmap":
+                return self.has_ion_mobility
+            elif panel_id == "chromatograms":
+                return self.has_chromatograms
+            elif panel_id == "features_table":
+                return self.feature_data is not None and len(self.feature_data) > 0
+            else:
+                return True
+        return True
+
+    def update_panel_visibility(self) -> None:
+        """Update visibility of all panels based on current visibility settings."""
+        for panel_id, element in self.panel_elements.items():
+            if element is not None:
+                should_show = self.should_panel_be_visible(panel_id)
+                element.set_visibility(should_show)
+
+    def set_panel_visibility(self, panel_id: str, visibility: bool | str) -> None:
+        """Set visibility for a specific panel.
+
+        Args:
+            panel_id: The panel identifier
+            visibility: True (always show), False (always hide), or "auto" (data-dependent)
+        """
+        self.panel_visibility[panel_id] = visibility
+        if panel_id in self.panel_elements and self.panel_elements[panel_id] is not None:
+            should_show = self.should_panel_be_visible(panel_id)
+            self.panel_elements[panel_id].set_visibility(should_show)
 
     def set_loading(self, is_loading: bool, message: str = "") -> None:
         """Set the loading state and optionally display a message.
@@ -1634,9 +1891,16 @@ class Viewer:
                 # Get peak annotations if enabled
                 peak_annotations = None
                 if self.annotate_peaks:
-                    peak_annotations = annotate_spectrum_with_id(
-                        spec, best_hit, tolerance_da=self.annotation_tolerance_da
+                    # First check for external peak annotations (from specialized tools like OpenNuXL)
+                    peak_annotations = get_external_peak_annotations(
+                        best_hit, mz_array, tolerance_da=self.annotation_tolerance_da
                     )
+
+                    if not peak_annotations:
+                        # Fall back to generating annotations with SpectrumAnnotator
+                        peak_annotations = annotate_spectrum_with_id(
+                            spec, best_hit, tolerance_da=self.annotation_tolerance_da
+                        )
 
                 # Create annotated spectrum plot
                 fig = create_annotated_spectrum_plot(
@@ -1647,6 +1911,7 @@ class Viewer:
                     prec_mz,
                     peak_annotations=peak_annotations,
                     annotate=self.annotate_peaks,
+                    mirror_mode=self.mirror_annotation_view,
                 )
 
                 # Update title to include spectrum index
@@ -4597,13 +4862,11 @@ def create_ui():
         """),
         ).props("flat round dense color=grey").tooltip("Toggle fullscreen (F11)")
 
-    with ui.column().classes("w-full items-center p-4"):
-        ui.label("pyopenms-viewer").classes("text-3xl font-bold mb-2")
-        ui.label("Fast mzML viewer using NiceGUI + Datashader + pyOpenMS").classes("text-gray-400 mb-4")
-
-        # File loading section (local filesystem paths)
-        with ui.card().classes("w-full max-w-6xl mb-4"):
-            ui.label("Load Data").classes("text-xl font-semibold mb-2")
+    with ui.column().classes("w-full items-center p-2"):
+        # Compact toolbar for file operations and info display
+        with ui.row().classes("w-full max-w-[1700px] items-center gap-2 px-2 py-1 rounded").style(
+            "background: rgba(128,128,128,0.1);"
+        ):
 
             async def handle_upload(e):
                 """Handle uploaded file - detect type and load appropriately."""
@@ -4684,6 +4947,8 @@ def create_ui():
                             else:
                                 if viewer.im_info_label:
                                     viewer.im_info_label.set_text("No ion mobility data")
+                            # Update panel visibility based on loaded data
+                            viewer.update_panel_visibility()
                             ui.notify(f"Loaded {len(viewer.df):,} peaks from {original_name}", type="positive")
                         else:
                             ui.notify(f"Failed to load {original_name}", type="negative")
@@ -4696,6 +4961,8 @@ def create_ui():
                                 viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
                             if viewer.feature_table is not None:
                                 viewer.feature_table.rows = viewer.feature_data
+                            # Update panel visibility (features panel now has data)
+                            viewer.update_panel_visibility()
                             ui.notify(
                                 f"Loaded {viewer.feature_map.size():,} features from {original_name}", type="positive"
                             )
@@ -4828,6 +5095,8 @@ def create_ui():
                                     else:
                                         if viewer.im_info_label:
                                             viewer.im_info_label.set_text("No ion mobility data")
+                                    # Update panel visibility based on loaded data
+                                    viewer.update_panel_visibility()
                                     ui.notify(f"Loaded {len(viewer.df):,} peaks from {filename}", type="positive")
                                 else:
                                     ui.notify(f"Failed to load {filename}", type="negative")
@@ -4840,6 +5109,8 @@ def create_ui():
                                         viewer.feature_info_label.set_text(f"Features: {viewer.feature_map.size():,}")
                                     if viewer.feature_table is not None:
                                         viewer.feature_table.rows = viewer.feature_data
+                                    # Update panel visibility (features panel now has data)
+                                    viewer.update_panel_visibility()
                                     ui.notify(
                                         f"Loaded {viewer.feature_map.size():,} features from {filename}",
                                         type="positive",
@@ -4872,118 +5143,194 @@ def create_ui():
                 except Exception as ex:
                     ui.notify(f"File dialog error: {ex}", type="negative")
 
-            with ui.row().classes("w-full items-center gap-4"):
-                # Native file dialog button (works in native mode, shows warning in browser mode)
-                ui.button(
-                    "Open Files...",
-                    icon="folder_open",
-                    on_click=open_native_file_dialog,
-                ).props("outline").tooltip("Open files using native file dialog (native mode only)")
+            # Open button
+            ui.button(
+                icon="folder_open",
+                on_click=open_native_file_dialog,
+            ).props("flat dense").tooltip("Open files (native mode)")
 
-                ui.upload(
-                    label="Drop mzML, featureXML, or idXML files here",
-                    on_upload=handle_upload,
-                    auto_upload=True,
-                    multiple=True,
-                ).classes("flex-grow").props(
-                    'accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat bordered'
-                )
+            # Compact drop zone
+            ui.upload(
+                label="Drop files here",
+                on_upload=handle_upload,
+                auto_upload=True,
+                multiple=True,
+            ).classes("w-40").props(
+                'accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat dense bordered'
+            ).style("min-height: 32px;")
 
-                # Clear buttons
-                with ui.column().classes("gap-1"):
+            ui.separator().props("vertical").classes("h-6")
 
-                    def clear_features():
-                        viewer.clear_features()
-                        viewer.update_plot()
+            # Clear buttons (icon only)
+            def clear_features():
+                viewer.clear_features()
+                viewer.update_plot()
+                if viewer.feature_info_label:
+                    viewer.feature_info_label.set_text("Features: None")
 
-                    def clear_ids():
-                        viewer.clear_ids()
-                        viewer.update_plot()
+            def clear_ids():
+                viewer.clear_ids()
+                viewer.update_plot()
+                if viewer.id_info_label:
+                    viewer.id_info_label.set_text("IDs: None")
 
-                    ui.button("Clear Features", on_click=clear_features).props("dense outline color=grey").classes(
-                        "text-xs"
+            ui.button(icon="delete_outline", on_click=clear_features).props(
+                "flat dense size=sm"
+            ).tooltip("Clear Features").classes("text-cyan-400")
+            ui.button(icon="delete_outline", on_click=clear_ids).props(
+                "flat dense size=sm"
+            ).tooltip("Clear IDs").classes("text-orange-400")
+
+            ui.separator().props("vertical").classes("h-6")
+
+            # Settings button for panel order
+            def show_panel_settings():
+                with ui.dialog() as dialog, ui.card().classes("min-w-[400px]"):
+                    ui.label("Panel Configuration").classes("text-lg font-bold mb-2")
+
+                    # Panel visibility section
+                    ui.label("Visibility").classes("text-sm font-semibold text-gray-400 mt-2")
+                    ui.label("Toggle panels on/off. 'Auto' hides when no data.").classes(
+                        "text-xs text-gray-500 mb-2"
                     )
-                    ui.button("Clear IDs", on_click=clear_ids).props("dense outline color=grey").classes("text-xs")
 
-                # Settings button for panel order
-                def show_panel_settings():
-                    with ui.dialog() as dialog, ui.card().classes("min-w-[350px]"):
-                        ui.label("Panel Order").classes("text-lg font-bold mb-2")
-                        ui.label("Reorder panels using the arrows").classes("text-xs text-gray-500 mb-4")
+                    visibility_container = ui.column().classes("w-full gap-1 mb-4")
 
-                        panel_list = ui.column().classes("w-full gap-1")
+                    # Panels that support "auto" visibility
+                    auto_panels = {"chromatograms", "im_peakmap", "features_table"}
 
-                        def refresh_list():
-                            panel_list.clear()
-                            with panel_list:
+                    def refresh_visibility():
+                        visibility_container.clear()
+                        with visibility_container:
+                            for panel_id in viewer.panel_order:
+                                panel_def = viewer.panel_definitions.get(panel_id, {})
+                                current_vis = viewer.panel_visibility.get(panel_id, True)
+
+                                with ui.row().classes("w-full items-center gap-2"):
+                                    ui.icon(panel_def.get("icon", "widgets")).classes("text-gray-400 text-sm")
+                                    ui.label(panel_def.get("name", panel_id)).classes("flex-grow text-sm")
+
+                                    if panel_id in auto_panels:
+                                        # Three-state toggle for auto-capable panels
+                                        options = ["Hide", "Auto", "Show"]
+                                        if current_vis is False:
+                                            current_val = "Hide"
+                                        elif current_vis == "auto":
+                                            current_val = "Auto"
+                                        else:
+                                            current_val = "Show"
+
+                                        def make_toggle_handler(pid=panel_id):
+                                            def handler(e):
+                                                if e.value == "Hide":
+                                                    viewer.panel_visibility[pid] = False
+                                                elif e.value == "Auto":
+                                                    viewer.panel_visibility[pid] = "auto"
+                                                else:
+                                                    viewer.panel_visibility[pid] = True
+
+                                            return handler
+
+                                        ui.toggle(options, value=current_val, on_change=make_toggle_handler()).props(
+                                            "dense size=sm"
+                                        ).classes("text-xs")
+                                    else:
+                                        # Simple checkbox for always-visible panels
+
+                                        def make_checkbox_handler(pid=panel_id):
+                                            def handler(e):
+                                                viewer.panel_visibility[pid] = e.value
+
+                                            return handler
+
+                                        ui.checkbox(
+                                            "", value=current_vis is True, on_change=make_checkbox_handler()
+                                        ).props("dense")
+
+                    refresh_visibility()
+
+                    ui.separator().classes("my-2")
+
+                    # Panel order section
+                    ui.label("Order").classes("text-sm font-semibold text-gray-400")
+                    ui.label("Reorder panels using arrows").classes("text-xs text-gray-500 mb-2")
+
+                    panel_list = ui.column().classes("w-full gap-1")
+
+                    def refresh_list():
+                        panel_list.clear()
+                        with panel_list:
+                            for idx, panel_id in enumerate(viewer.panel_order):
+                                panel_def = viewer.panel_definitions.get(panel_id, {})
+                                with ui.row().classes("w-full items-center gap-2 p-1 rounded").style(
+                                    "background: rgba(128,128,128,0.15);"
+                                ):
+                                    ui.icon(panel_def.get("icon", "widgets")).classes("text-gray-400 text-sm")
+                                    ui.label(panel_def.get("name", panel_id)).classes("flex-grow text-sm")
+
+                                    def move_up(i=idx):
+                                        if i > 0:
+                                            viewer.panel_order[i], viewer.panel_order[i - 1] = (
+                                                viewer.panel_order[i - 1],
+                                                viewer.panel_order[i],
+                                            )
+                                            refresh_list()
+                                            refresh_visibility()
+
+                                    def move_down(i=idx):
+                                        if i < len(viewer.panel_order) - 1:
+                                            viewer.panel_order[i], viewer.panel_order[i + 1] = (
+                                                viewer.panel_order[i + 1],
+                                                viewer.panel_order[i],
+                                            )
+                                            refresh_list()
+                                            refresh_visibility()
+
+                                    ui.button(icon="keyboard_arrow_up", on_click=move_up).props(
+                                        "flat dense size=sm"
+                                    ).set_enabled(idx > 0)
+                                    ui.button(icon="keyboard_arrow_down", on_click=move_down).props(
+                                        "flat dense size=sm"
+                                    ).set_enabled(idx < len(viewer.panel_order) - 1)
+
+                    refresh_list()
+
+                    with ui.row().classes("w-full justify-end gap-2 mt-4"):
+
+                        def apply_settings():
+                            # Reorder panels using move()
+                            if viewer.panels_container:
                                 for idx, panel_id in enumerate(viewer.panel_order):
-                                    panel_def = viewer.panel_definitions.get(panel_id, {})
-                                    with ui.row().classes("w-full items-center gap-2 p-2 rounded").style(
-                                        "background: rgba(128,128,128,0.2);"
-                                    ):
-                                        ui.icon(panel_def.get("icon", "widgets")).classes("text-gray-400")
-                                        ui.label(panel_def.get("name", panel_id)).classes("flex-grow")
+                                    if panel_id in viewer.panel_elements:
+                                        viewer.panel_elements[panel_id].move(target_index=idx)
+                            # Apply visibility
+                            viewer.update_panel_visibility()
+                            dialog.close()
+                            ui.notify("Panel settings updated", type="positive")
 
-                                        def move_up(i=idx):
-                                            if i > 0:
-                                                viewer.panel_order[i], viewer.panel_order[i - 1] = (
-                                                    viewer.panel_order[i - 1],
-                                                    viewer.panel_order[i],
-                                                )
-                                                refresh_list()
+                        ui.button("Cancel", on_click=dialog.close).props("flat")
+                        ui.button("Apply", on_click=apply_settings).props("color=primary")
 
-                                        def move_down(i=idx):
-                                            if i < len(viewer.panel_order) - 1:
-                                                viewer.panel_order[i], viewer.panel_order[i + 1] = (
-                                                    viewer.panel_order[i + 1],
-                                                    viewer.panel_order[i],
-                                                )
-                                                refresh_list()
+                dialog.open()
 
-                                        ui.button(icon="keyboard_arrow_up", on_click=move_up).props(
-                                            "flat dense size=sm"
-                                        ).set_enabled(idx > 0)
-                                        ui.button(icon="keyboard_arrow_down", on_click=move_down).props(
-                                            "flat dense size=sm"
-                                        ).set_enabled(idx < len(viewer.panel_order) - 1)
+            ui.button(icon="tune", on_click=show_panel_settings).props("flat dense").tooltip("Panel Settings")
 
-                        refresh_list()
+            # Spacer to push info to the right
+            ui.space()
 
-                        with ui.row().classes("w-full justify-end gap-2 mt-4"):
-
-                            def apply_order():
-                                # Reorder panels using move()
-                                if viewer.panels_container:
-                                    for idx, panel_id in enumerate(viewer.panel_order):
-                                        if panel_id in viewer.panel_elements:
-                                            viewer.panel_elements[panel_id].move(target_index=idx)
-                                dialog.close()
-                                ui.notify("Panel order updated", type="positive")
-
-                            ui.button("Cancel", on_click=dialog.close).props("flat")
-                            ui.button("Apply", on_click=apply_order).props("color=primary")
-
-                    dialog.open()
-
-                ui.button(icon="tune", on_click=show_panel_settings).props("flat dense").tooltip("Panel Settings")
-
-        # Info bar
-        with ui.row().classes("w-full justify-center gap-6 mb-2 flex-wrap"):
-            viewer.info_label = ui.label("No file loaded").classes("text-gray-400")
-            viewer.feature_info_label = ui.label("Features: None").classes("text-cyan-400")
-            viewer.id_info_label = ui.label("IDs: None").classes("text-orange-400")
-            viewer.faims_info_label = ui.label("").classes("text-purple-400")
+            # Inline info labels
+            viewer.info_label = ui.label("No file loaded").classes("text-xs text-gray-400")
+            viewer.feature_info_label = ui.label("").classes("text-xs text-cyan-400")
+            viewer.id_info_label = ui.label("").classes("text-xs text-orange-400")
+            viewer.faims_info_label = ui.label("").classes("text-xs text-purple-400")
             viewer.faims_info_label.set_visibility(False)
-            viewer.status_label = ui.label("Ready").classes("text-green-400")
+            viewer.status_label = ui.label("").classes("text-xs text-green-400")
 
-        # Range display
-        with ui.row().classes("w-full justify-center gap-8 mb-2"):
-            viewer.rt_range_label = ui.label("RT: -- - -- s").classes("text-blue-300")
-            viewer.mz_range_label = ui.label("m/z: -- - --").classes("text-blue-300")
+            # Range labels
+            viewer.rt_range_label = ui.label("").classes("text-xs text-blue-300")
+            viewer.mz_range_label = ui.label("").classes("text-xs text-blue-300")
 
-        # FAIMS toggle (hidden by default, shown when FAIMS data is detected)
-        with ui.row().classes("w-full justify-center gap-4 mb-2"):
-
+            # FAIMS toggle (hidden by default, shown when FAIMS data is detected)
             def toggle_faims_view():
                 viewer.show_faims_view = faims_toggle.value
                 if viewer.faims_container:
@@ -4991,8 +5338,8 @@ def create_ui():
                 if viewer.df is not None and viewer.show_faims_view:
                     viewer.update_faims_plots()
 
-            faims_toggle = ui.checkbox("FAIMS Multi-CV View", value=False, on_change=toggle_faims_view).classes(
-                "text-purple-400"
+            faims_toggle = ui.checkbox("FAIMS", value=False, on_change=toggle_faims_view).props("dense").classes(
+                "text-xs text-purple-400"
             )
             faims_toggle.set_visibility(False)
             viewer.faims_toggle = faims_toggle
@@ -6315,6 +6662,18 @@ def create_ui():
                 )
                 ui.tooltip("Mass tolerance for matching peaks to theoretical ions (Da)")
 
+                def toggle_mirror_view():
+                    viewer.mirror_annotation_view = mirror_view_cb.value
+                    if viewer.selected_spectrum_idx is not None:
+                        viewer.show_spectrum_in_browser(viewer.selected_spectrum_idx)
+
+                mirror_view_cb = (
+                    ui.checkbox("Mirror", value=viewer.mirror_annotation_view, on_change=toggle_mirror_view)
+                    .props("dense")
+                    .classes("text-blue-400")
+                )
+                ui.tooltip("Mirror view: flip annotated peaks downward for comparison")
+
             # Define all columns - basic and advanced
             basic_columns = [
                 {"name": "idx", "label": "#", "field": "idx", "sortable": True, "align": "left"},
@@ -6780,6 +7139,9 @@ def create_ui():
 - Use `--native` for file dialog
 - Load multiple files at once
 """).classes("text-xs text-gray-400")
+
+        # Apply initial panel visibility (hide panels with "auto" that have no data yet)
+        viewer.update_panel_visibility()
 
         # Keyboard handlers
         def on_global_key(e):

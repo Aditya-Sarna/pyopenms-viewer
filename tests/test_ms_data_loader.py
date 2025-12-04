@@ -248,3 +248,125 @@ class TestProgressCallback:
         progress_values = [p[1] for p in progress_messages]
         for i in range(1, len(progress_values)):
             assert progress_values[i] >= progress_values[i - 1], "Progress should not decrease"
+
+
+class TestExternalFragmentAnnotations:
+    """Tests for external fragment annotation parsing."""
+
+    def test_parse_external_annotations_basic(self):
+        """Test parsing basic fragment annotations."""
+        import numpy as np
+        from pyopenms_viewer import parse_external_fragment_annotations
+
+        # Sample m/z array (experimental peaks)
+        exp_mz = np.array([201.09, 272.12, 387.15, 501.19])
+
+        # Sample fragment_annotation string (like from idXML)
+        ann_str = '201.0867919921875,1.0,1,"b2+"|272.1239013671875,0.143,1,"b3+"'
+
+        annotations = parse_external_fragment_annotations(ann_str, exp_mz, tolerance_da=0.05)
+
+        assert len(annotations) == 2
+        # First annotation should match peak at index 0 (201.09)
+        assert annotations[0][0] == 0  # peak_index
+        assert annotations[0][1] == "b2+"  # ion_name
+        assert annotations[0][2] == "b"  # ion_type
+
+        # Second annotation should match peak at index 1 (272.12)
+        assert annotations[1][0] == 1
+        assert annotations[1][1] == "b3+"
+        assert annotations[1][2] == "b"
+
+    def test_parse_external_annotations_various_ion_types(self):
+        """Test parsing annotations with various ion types."""
+        import numpy as np
+        from pyopenms_viewer import parse_external_fragment_annotations
+
+        exp_mz = np.array([147.11, 201.09, 712.36, 112.05])
+
+        ann_str = (
+            '147.112884521484375,0.075,1,"y1+"|'
+            '201.0867919921875,1.0,1,"b2+"|'
+            '712.36236572265625,0.394,1,"y5+U\'-H2O+"|'
+            '112.050621032714844,0.028,1,"MI:C\'+"|'
+        )
+
+        annotations = parse_external_fragment_annotations(ann_str, exp_mz, tolerance_da=0.05)
+
+        assert len(annotations) == 4
+
+        # Check ion types are correctly identified
+        ion_types = {ann[1]: ann[2] for ann in annotations}
+        assert ion_types["y1+"] == "y"
+        assert ion_types["b2+"] == "b"
+        assert ion_types["y5+U'-H2O+"] == "y"  # Modified y-ion
+        assert ion_types["MI:C'+"] == "unknown"  # Immonium ion
+
+    def test_parse_external_annotations_empty_input(self):
+        """Test parsing with empty inputs."""
+        import numpy as np
+        from pyopenms_viewer import parse_external_fragment_annotations
+
+        exp_mz = np.array([100.0, 200.0])
+
+        # Empty string
+        assert parse_external_fragment_annotations("", exp_mz) == []
+
+        # Empty m/z array
+        assert parse_external_fragment_annotations("100.0,1.0,1,\"b1+\"", np.array([])) == []
+
+    def test_parse_external_annotations_tolerance(self):
+        """Test that tolerance is respected."""
+        import numpy as np
+        from pyopenms_viewer import parse_external_fragment_annotations
+
+        exp_mz = np.array([200.0, 300.0])
+
+        ann_str = '200.1,1.0,1,"b2+"'  # 0.1 Da away from 200.0
+
+        # With 0.05 Da tolerance - should NOT match
+        annotations = parse_external_fragment_annotations(ann_str, exp_mz, tolerance_da=0.05)
+        assert len(annotations) == 0
+
+        # With 0.15 Da tolerance - should match
+        annotations = parse_external_fragment_annotations(ann_str, exp_mz, tolerance_da=0.15)
+        assert len(annotations) == 1
+        assert annotations[0][0] == 0  # Matched to first peak
+
+    def test_get_external_peak_annotations_from_idxml(self):
+        """Test getting external annotations using getPeakAnnotations() API from real idXML data."""
+        import numpy as np
+        from pyopenms import IdXMLFile
+        from pyopenms_viewer import get_external_peak_annotations
+
+        # Load test file with external fragment annotations
+        external_ann_idxml = TEST_DATA_DIR / "external_fragment_annotations.idXML"
+        assert external_ann_idxml.exists(), f"Test file not found: {external_ann_idxml}"
+
+        pep_ids = []
+        prot_ids = []
+        IdXMLFile().load(str(external_ann_idxml), prot_ids, pep_ids)
+
+        assert len(pep_ids) > 0, "Should have peptide IDs"
+
+        hits = pep_ids[0].getHits()
+        assert len(hits) > 0, "Should have peptide hits"
+
+        best_hit = hits[0]
+
+        # Create a mock experimental m/z array based on known annotation m/z values
+        # from the test file (b2+ at 201.087, y1+ at 147.113, etc.)
+        exp_mz = np.array([112.05, 147.11, 201.09, 272.12, 387.15, 712.36])
+
+        annotations = get_external_peak_annotations(best_hit, exp_mz, tolerance_da=0.05)
+
+        # Should have matched some annotations
+        assert len(annotations) > 0, "Should have found external annotations"
+
+        # Check we got expected ion types
+        ion_types = set(ann[2] for ann in annotations)
+        assert "b" in ion_types or "y" in ion_types, "Should have b or y ions"
+
+        # Check annotation names are extracted correctly
+        ion_names = [ann[1] for ann in annotations]
+        assert any("b2+" in name for name in ion_names), "Should have b2+ annotation"
