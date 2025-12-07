@@ -14,7 +14,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from pyopenms import MSExperiment, MzMLFile
+from pyopenms import MSExperiment, MzMLFile, DriftTimeUnit
 
 from pyopenms_viewer.core.state import ViewerState
 
@@ -25,13 +25,29 @@ _CV_FILTER_PATTERN = re.compile(r'\bcv=(-?\d+(?:\.\d+)?)\b', re.IGNORECASE)
 def get_cv_from_spectrum(spec) -> Optional[float]:
     """Extract FAIMS compensation voltage from spectrum metadata.
 
+    Uses getDriftTimeUnit() to check if spectrum has FAIMS CV data, then
+    retrieves the value via getDriftTime(). Falls back to metadata keys
+    and filter string parsing for compatibility.
+
     Args:
         spec: MSSpectrum object
 
     Returns:
         Compensation voltage value, or None if not found
+
+    TODO: pyOpenMS 3.5+ may expose FAIMSHelper.getCompensationVoltages() which
+    would provide a cleaner API for FAIMS CV extraction at the experiment level.
     """
-    # Try common CV metadata names
+    # Primary method: use DriftTimeUnit (most reliable for properly annotated mzML)
+    try:
+        if spec.getDriftTimeUnit() == DriftTimeUnit.FAIMS_COMPENSATION_VOLTAGE:
+            cv = spec.getDriftTime()
+            if cv != 0.0 or spec.getDriftTime() == 0.0:  # 0.0 can be valid CV
+                return float(cv)
+    except Exception:
+        pass
+
+    # Fallback: Try common CV metadata names
     cv_names = [
         "FAIMS compensation voltage",
         "ion mobility drift time",
@@ -44,7 +60,7 @@ def get_cv_from_spectrum(spec) -> Optional[float]:
             except (ValueError, TypeError):
                 pass
 
-    # Check in acquisition info
+    # Fallback: Check in acquisition info
     try:
         acq = spec.getAcquisitionInfo()
         if acq:
@@ -55,7 +71,7 @@ def get_cv_from_spectrum(spec) -> Optional[float]:
     except Exception:
         pass
 
-    # Parse CV from filter string (Thermo format: "cv=-45.00")
+    # Fallback: Parse CV from filter string (Thermo format: "cv=-45.00")
     if spec.metaValueExists("filter string"):
         try:
             filter_str = spec.getMetaValue("filter string")
