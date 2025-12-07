@@ -90,6 +90,7 @@ class DEFAULTS:
     ANNOTATE_PEAKS = True
     ANNOTATION_TOLERANCE_DA = 0.05
     MIRROR_ANNOTATION_VIEW = False
+    SHOW_UNMATCHED_THEORETICAL = True
     SHOW_ALL_HITS = False
 
     # 3D view settings

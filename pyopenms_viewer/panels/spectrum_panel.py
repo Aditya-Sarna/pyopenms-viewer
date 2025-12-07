@@ -236,6 +236,15 @@ class SpectrumPanel(BasePanel):
                 "dense size=sm color=grey"
             ).tooltip("Clear all labels for this spectrum")
 
+            # Show unmatched theoretical peaks toggle (for mirror mode)
+            ui.checkbox(
+                "Unmatched",
+                value=self.state.show_unmatched_theoretical,
+                on_change=self._toggle_show_unmatched,
+            ).props("dense size=sm color=grey").classes("text-xs").tooltip(
+                "Show unmatched theoretical ions as dashed lines in mirror mode"
+            )
+
             ui.label("|").classes("mx-1 text-gray-600")
 
             self.info_label = ui.label("Click TIC to select spectrum").classes(
@@ -289,6 +298,7 @@ class SpectrumPanel(BasePanel):
 
         # Check if there's a matching peptide ID for annotation
         matching_id_idx = self.state.find_matching_id_for_spectrum(spectrum_idx)
+        print(f"DEBUG show_spectrum: spectrum_idx={spectrum_idx}, ms_level={ms_level}, matching_id_idx={matching_id_idx}")
 
         if matching_id_idx is not None:
             # Use annotated spectrum display (shows sequence in title even if peak coloring is off)
@@ -548,15 +558,18 @@ class SpectrumPanel(BasePanel):
                 )
 
         # Create annotated spectrum plot
+        print(f"DEBUG spectrum_panel: calling create_annotated_spectrum_plot with annotate={self.state.annotate_peaks}, mirror_mode={self.state.mirror_annotation_view}, show_unmatched={self.state.show_unmatched_theoretical}")
         fig = create_annotated_spectrum_plot(
             mz_array,
             int_array,
             sequence_str,
             charge,
             prec_mz,
+            tolerance_da=self.state.annotation_tolerance_da,
             peak_annotations=peak_annotations,
             annotate=self.state.annotate_peaks,
             mirror_mode=self.state.mirror_annotation_view,
+            show_unmatched=self.state.show_unmatched_theoretical,
         )
 
         # Update title to include spectrum index
@@ -1416,6 +1429,12 @@ class SpectrumPanel(BasePanel):
     def _toggle_mz_labels(self, e):
         """Toggle m/z label display."""
         self.state.show_mz_labels = e.value
+        if self.state.selected_spectrum_idx is not None:
+            self.show_spectrum(self.state.selected_spectrum_idx)
+
+    def _toggle_show_unmatched(self, e):
+        """Toggle unmatched theoretical peaks display in mirror mode."""
+        self.state.show_unmatched_theoretical = e.value
         if self.state.selected_spectrum_idx is not None:
             self.show_spectrum(self.state.selected_spectrum_idx)
 

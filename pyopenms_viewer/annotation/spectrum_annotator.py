@@ -281,6 +281,7 @@ def create_annotated_spectrum_plot(
     peak_annotations: Optional[list[tuple[int, str, str]]] = None,
     annotate: bool = True,
     mirror_mode: bool = False,
+    show_unmatched: bool = True,
 ) -> go.Figure:
     """Create an annotated spectrum plot using Plotly.
 
@@ -294,6 +295,7 @@ def create_annotated_spectrum_plot(
         peak_annotations: Optional list of (peak_index, ion_name, ion_type) from SpectrumAnnotator
         annotate: Whether to show annotations (if False, shows raw spectrum)
         mirror_mode: If True, flip annotated peaks downward for comparison view
+        show_unmatched: If True and mirror_mode is True, show unmatched theoretical ions as dashed lines
 
     Returns:
         Plotly Figure object with annotated spectrum
@@ -301,6 +303,10 @@ def create_annotated_spectrum_plot(
     # Normalize intensities to percentage
     max_int = exp_int.max() if len(exp_int) > 0 else 1
     exp_int_norm = (exp_int / max_int) * 100
+
+    import sys
+    print(f"DEBUG create_annotated_spectrum_plot: annotate={annotate}, mirror_mode={mirror_mode}")
+    sys.stdout.flush()
 
     # Create figure
     fig = go.Figure()
@@ -339,6 +345,8 @@ def create_annotated_spectrum_plot(
     # Add annotations if enabled
     if annotate:
         matched_peaks = {"b": [], "y": [], "a": [], "c": [], "x": [], "z": [], "precursor": [], "unknown": []}
+        # Track m/z values of matched experimental peaks for detecting unmatched theoretical ions
+        matched_exp_mz_list = []
 
         if peak_annotations:
             # Use provided peak annotations from SpectrumAnnotator
@@ -347,13 +355,14 @@ def create_annotated_spectrum_plot(
                     matched_peaks[ion_type].append(
                         {"mz": exp_mz[peak_idx], "intensity": exp_int_norm[peak_idx], "label": ion_name}
                     )
+                    matched_exp_mz_list.append(exp_mz[peak_idx])
         else:
             # Fall back to generating theoretical spectrum for annotation
             try:
                 seq = AASequence.fromString(sequence_str)
                 theo_ions = generate_theoretical_spectrum(seq, charge)
 
-                for ion_type, ions in [("b", theo_ions["b"]), ("y", theo_ions["y"])]:
+                for ion_type, ions in [("b", theo_ions["b"]), ("y", theo_ions["y"]), ("a", theo_ions.get("a", []))]:
                     for theo_mz, ion_name in ions:
                         # Find closest experimental peak
                         if len(exp_mz) > 0:
@@ -363,8 +372,87 @@ def create_annotated_spectrum_plot(
                                 matched_peaks[ion_type].append(
                                     {"mz": exp_mz[min_idx], "intensity": exp_int_norm[min_idx], "label": ion_name}
                                 )
+                                matched_exp_mz_list.append(exp_mz[min_idx])
             except Exception:
                 pass
+
+        # In mirror mode, show unmatched theoretical ions as dashed grey lines
+        print(f"DEBUG checking mirror_mode: {mirror_mode}, show_unmatched: {show_unmatched}")
+        sys.stdout.flush()
+        if mirror_mode and show_unmatched:
+            print(f"DEBUG ENTERING mirror_mode block, sequence_str={sequence_str}")
+            sys.stdout.flush()
+            try:
+                seq = AASequence.fromString(sequence_str)
+                theo_ions = generate_theoretical_spectrum(seq, charge)
+                print(f"DEBUG mirror_mode: sequence={sequence_str}, charge={charge}")
+                print(f"DEBUG theo_ions b: {len(theo_ions.get('b', []))}, y: {len(theo_ions.get('y', []))}, a: {len(theo_ions.get('a', []))}")
+                print(f"DEBUG matched_exp_mz_list: {len(matched_exp_mz_list)} entries")
+                sys.stdout.flush()
+
+                unmatched_ions = []
+                total_theo = 0
+                matched_theo = 0
+                for ion_type in ["b", "y", "a"]:
+                    ions = theo_ions.get(ion_type, [])
+                    for theo_mz, ion_name in ions:
+                        total_theo += 1
+                        # Check if this theoretical ion was matched by comparing m/z to matched experimental peaks
+                        is_matched = any(abs(theo_mz - exp_mz_val) <= tolerance_da for exp_mz_val in matched_exp_mz_list)
+                        if is_matched:
+                            matched_theo += 1
+                        else:
+                            unmatched_ions.append({"mz": theo_mz, "label": ion_name, "ion_type": ion_type})
+                print(f"DEBUG unmatched_ions: {len(unmatched_ions)} out of {total_theo} theoretical ions (matched: {matched_theo})")
+                sys.stdout.flush()
+
+                if unmatched_ions:
+                    # Create dashed grey stem plot for unmatched theoretical ions
+                    x_unmatched = []
+                    y_unmatched = []
+                    for ion in unmatched_ions:
+                        x_unmatched.extend([ion["mz"], ion["mz"], None])
+                        y_unmatched.extend([0, -90, None])  # 90% intensity, mirrored
+
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_unmatched,
+                            y=y_unmatched,
+                            mode="lines",
+                            line={"color": "gray", "width": 1, "dash": "dash"},
+                            name="Unmatched theoretical",
+                            hoverinfo="skip",
+                            opacity=0.5,
+                        )
+                    )
+
+                    # Add hover points and annotations for unmatched theoretical peaks
+                    for ion in unmatched_ions:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[ion["mz"]],
+                                y=[-90],
+                                mode="markers",
+                                marker={"color": "gray", "size": 4, "opacity": 0.5},
+                                showlegend=False,
+                                hovertemplate=f"{ion['label']} (theoretical)<br>m/z: {ion['mz']:.4f}<extra></extra>",
+                            )
+                        )
+
+                        # Add text annotation for unmatched ions
+                        fig.add_annotation(
+                            x=ion["mz"],
+                            y=-93,
+                            text=ion["label"],
+                            showarrow=False,
+                            font={"size": 8, "color": "gray"},
+                            textangle=45,
+                            opacity=0.6,
+                        )
+            except Exception as e:
+                print(f"DEBUG mirror_mode error: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Add matched peaks as colored lines grouped by ion type
         for ion_type, peaks in matched_peaks.items():

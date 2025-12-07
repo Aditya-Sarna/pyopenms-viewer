@@ -173,6 +173,7 @@ class ViewerState:
         self.annotate_peaks: bool = DEFAULTS.ANNOTATE_PEAKS
         self.annotation_tolerance_da: float = DEFAULTS.ANNOTATION_TOLERANCE_DA
         self.mirror_annotation_view: bool = DEFAULTS.MIRROR_ANNOTATION_VIEW
+        self.show_unmatched_theoretical: bool = DEFAULTS.SHOW_UNMATCHED_THEORETICAL
         self.show_all_hits: bool = DEFAULTS.SHOW_ALL_HITS
         self.link_spectrum_mz_to_im: bool = False
         self.show_mobilogram: bool = True
