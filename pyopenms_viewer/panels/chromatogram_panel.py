@@ -165,6 +165,9 @@ class ChromatogramPanel(BasePanel):
                 font={"color": "#888"},
                 height=250,
             )
+            # Hide axes completely when nothing selected
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
             return fig
 
         # Convert RT to display units
