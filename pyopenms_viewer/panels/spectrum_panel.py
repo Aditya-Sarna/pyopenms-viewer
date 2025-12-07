@@ -487,9 +487,10 @@ class SpectrumPanel(BasePanel):
             tickcolor="#888"
         )
 
-        # Add measurements, annotations, and hover highlights
+        # Add measurements, annotations, m/z labels, and hover highlights
         self._add_measurements_to_figure(fig, spectrum_idx, mz_array, int_array)
         self._add_annotations_to_figure(fig, spectrum_idx, mz_array, int_array)
+        self._add_mz_labels_to_figure(fig, spectrum_idx, mz_array, int_array, max_int)
         self._add_highlight_to_figure(fig, mz_array, int_array)
 
         return fig
@@ -693,6 +694,77 @@ class SpectrumPanel(BasePanel):
                 arrowcolor="green",
                 font={"size": 9, "color": "green"},
                 yshift=10,
+            )
+
+    def _add_mz_labels_to_figure(
+        self,
+        fig: go.Figure,
+        spectrum_idx: int,
+        mz_array: np.ndarray,
+        int_array: np.ndarray,
+        max_int: float,
+    ):
+        """Add m/z labels to interesting peaks if enabled.
+
+        Uses scipy.signal.find_peaks to find prominent peaks and labels them
+        with their m/z values.
+
+        Args:
+            fig: Plotly figure to modify
+            spectrum_idx: Current spectrum index
+            mz_array: Array of m/z values
+            int_array: Array of intensity values
+            max_int: Maximum intensity for scaling
+        """
+        if not self.state.show_mz_labels or len(mz_array) == 0:
+            return
+
+        from scipy.signal import find_peaks
+
+        # Get m/z values that already have custom annotations
+        custom_annotations = self.state.peak_annotations.get(spectrum_idx, [])
+        annotated_mz = {ann["mz"] for ann in custom_annotations}
+
+        # Use scipy.signal.find_peaks to find interesting peaks
+        min_prominence = max_int * 0.05  # 5% of max intensity
+        peak_indices, properties = find_peaks(
+            int_array,
+            prominence=min_prominence,
+            distance=max(1, len(mz_array) // 50),  # At least 2% spacing
+        )
+
+        # If find_peaks returns too many or too few, fall back to top N by prominence
+        if len(peak_indices) > 15:
+            # Sort by prominence and keep top 15
+            prominences = properties.get("prominences", int_array[peak_indices])
+            sorted_idx = np.argsort(prominences)[-15:]
+            peak_indices = peak_indices[sorted_idx]
+        elif len(peak_indices) == 0:
+            # Fallback: just use top 10 by intensity
+            peak_indices = np.argsort(int_array)[-10:]
+
+        # Calculate y values based on display mode
+        if self.state.spectrum_intensity_percent:
+            scale = 100 / max_int
+        else:
+            scale = 1.0
+
+        for idx in peak_indices:
+            mz = float(mz_array[idx])
+            # Skip if this peak already has a custom annotation
+            if any(abs(mz - ann_mz) < 0.01 for ann_mz in annotated_mz):
+                continue
+
+            intensity = float(int_array[idx])
+            y_val = intensity * scale
+
+            fig.add_annotation(
+                x=mz,
+                y=y_val,
+                text=f"{mz:.2f}",
+                showarrow=False,
+                yshift=10,
+                font={"color": "#888", "size": 9},
             )
 
     def _add_highlight_to_figure(
@@ -1183,8 +1255,15 @@ class SpectrumPanel(BasePanel):
             if len(mz_array) == 0:
                 return
 
+            # Convert hovered_int from display units to raw units if in percentage mode
+            if hovered_int is not None and self.state.spectrum_intensity_percent:
+                max_int = float(int_array.max()) if len(int_array) > 0 else 1.0
+                hovered_int_raw = (hovered_int / 100.0) * max_int
+            else:
+                hovered_int_raw = hovered_int
+
             # Snap to nearest peak using 2D distance (m/z and intensity)
-            snapped = self._snap_to_peak(hovered_mz, mz_array, int_array, hovered_int)
+            snapped = self._snap_to_peak(hovered_mz, mz_array, int_array, hovered_int_raw)
             if snapped is None:
                 return
 
