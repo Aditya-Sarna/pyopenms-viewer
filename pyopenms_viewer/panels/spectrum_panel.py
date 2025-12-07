@@ -32,6 +32,9 @@ class SpectrumPanel(BasePanel):
     - Integration with ID data for annotated views
     """
 
+    # Maximum peaks to display before downsampling kicks in
+    MAX_DISPLAY_PEAKS = 5000
+
     def __init__(self, state: ViewerState):
         """Initialize spectrum panel.
 
@@ -49,6 +52,52 @@ class SpectrumPanel(BasePanel):
 
         # References to external update callbacks
         self._on_spectrum_changed_callback: Optional[Callable] = None
+
+    def _downsample_spectrum(
+        self,
+        mz_array: np.ndarray,
+        int_array: np.ndarray,
+        max_peaks: int = MAX_DISPLAY_PEAKS,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Downsample spectrum for display while preserving important peaks.
+
+        Uses a hybrid approach:
+        1. Keep uniformly spaced peaks for m/z coverage (70% of budget)
+        2. Keep top N peaks by intensity (30% of budget)
+
+        The uniform sampling is weighted higher to prevent large gaps in the display.
+
+        Args:
+            mz_array: Full m/z array
+            int_array: Full intensity array
+            max_peaks: Maximum number of peaks to keep
+
+        Returns:
+            Tuple of (downsampled_mz, downsampled_int, indices) where indices
+            maps back to the original arrays for snap-to-peak functionality
+        """
+        n_peaks = len(mz_array)
+
+        if n_peaks <= max_peaks:
+            return mz_array, int_array, np.arange(n_peaks)
+
+        # Split budget: 70% for uniform coverage, 30% for top intensity
+        n_uniform = int(max_peaks * 0.7)
+        n_top = max_peaks - n_uniform
+
+        # Get uniformly spaced indices for m/z coverage (higher priority)
+        uniform_indices = np.linspace(0, n_peaks - 1, n_uniform, dtype=int)
+
+        # Get indices of top N peaks by intensity
+        top_indices = np.argsort(int_array)[-n_top:]
+
+        # Combine and deduplicate
+        all_indices = np.unique(np.concatenate([uniform_indices, top_indices]))
+
+        # Sort by m/z for proper display
+        all_indices = all_indices[np.argsort(mz_array[all_indices])]
+
+        return mz_array[all_indices], int_array[all_indices], all_indices
 
     def build(self, container: ui.element) -> ui.expansion:
         """Build the spectrum panel UI.
@@ -140,6 +189,15 @@ class SpectrumPanel(BasePanel):
                 on_change=self._toggle_auto_scale,
             ).props("dense size=sm color=grey").classes("text-xs").tooltip(
                 "Auto-scale Y-axis to fit visible peaks (highest peak at 95%)"
+            )
+
+            # Downsampling checkbox
+            ui.checkbox(
+                "Downsample",
+                value=self.state.spectrum_downsampling,
+                on_change=self._toggle_downsampling,
+            ).props("dense size=sm color=grey").classes("text-xs").tooltip(
+                f"Downsample spectrum to max {self.MAX_DISPLAY_PEAKS:,} peaks for performance"
             )
 
             ui.label("|").classes("mx-1 text-gray-600")
@@ -289,16 +347,36 @@ class SpectrumPanel(BasePanel):
         """
         rt = spec.getRT()
         ms_level = spec.getMSLevel()
-        max_int = float(int_array.max()) if len(int_array) > 0 else 1.0
+        total_peaks = len(mz_array)
+        max_int = float(int_array.max()) if total_peaks > 0 else 1.0
+
+        # If zoomed, filter to visible range first, then downsample
+        if self.state.spectrum_zoom_range is not None:
+            xmin, xmax = self.state.spectrum_zoom_range
+            visible_mask = (mz_array >= xmin) & (mz_array <= xmax)
+            mz_visible = mz_array[visible_mask]
+            int_visible = int_array[visible_mask]
+            visible_peaks = len(mz_visible)
+        else:
+            mz_visible, int_visible = mz_array, int_array
+            visible_peaks = total_peaks
+
+        # Downsample for display if too many peaks (and downsampling is enabled)
+        if self.state.spectrum_downsampling:
+            mz_display, int_display_raw, _ = self._downsample_spectrum(mz_visible, int_visible)
+            is_downsampled = len(mz_display) < visible_peaks
+        else:
+            mz_display, int_display_raw = mz_visible, int_visible
+            is_downsampled = False
 
         # Choose intensity values based on display mode
         if self.state.spectrum_intensity_percent:
-            int_display = (int_array / max_int) * 100
+            int_display = (int_display_raw / max_int) * 100
             y_title = "Relative Intensity (%)"
             hover_fmt = "m/z: %{x:.4f}<br>Intensity: %{y:.1f}%<extra></extra>"
             y_range = [0, 105]
         else:
-            int_display = int_array
+            int_display = int_display_raw
             y_title = "Intensity"
             hover_fmt = "m/z: %{x:.4f}<br>Intensity: %{y:.2e}<extra></extra>"
             y_range = [0, max_int * 1.05]
@@ -313,7 +391,7 @@ class SpectrumPanel(BasePanel):
         # Add spectrum as vertical lines (stem plot)
         x_stems = []
         y_stems = []
-        for mz, intensity in zip(mz_array, int_display):
+        for mz, intensity in zip(mz_display, int_display):
             x_stems.extend([mz, mz, None])
             y_stems.extend([0, intensity, None])
 
@@ -329,10 +407,9 @@ class SpectrumPanel(BasePanel):
         )
 
         # Add invisible hover points at peak tops (opacity 0 hides markers but keeps hover)
-        # This matches the old implementation exactly - full arrays work fine
         fig.add_trace(
             go.Scatter(
-                x=mz_array,
+                x=mz_display,
                 y=int_display,
                 mode="markers",
                 marker={"color": color, "size": 8, "opacity": 0},
@@ -340,8 +417,17 @@ class SpectrumPanel(BasePanel):
             )
         )
 
-        # Title with spectrum info
-        title = f"Spectrum #{spectrum_idx} | MS{ms_level} | RT={rt:.2f}s | {len(mz_array):,} peaks"
+        # Title with spectrum info (show downsampling indicator)
+        if self.state.spectrum_zoom_range is not None and visible_peaks < total_peaks:
+            # Zoomed view
+            if is_downsampled:
+                title = f"Spectrum #{spectrum_idx} | MS{ms_level} | RT={rt:.2f}s | {visible_peaks:,}/{total_peaks:,} peaks ({len(mz_display):,} shown)"
+            else:
+                title = f"Spectrum #{spectrum_idx} | MS{ms_level} | RT={rt:.2f}s | {visible_peaks:,}/{total_peaks:,} peaks"
+        elif is_downsampled:
+            title = f"Spectrum #{spectrum_idx} | MS{ms_level} | RT={rt:.2f}s | {total_peaks:,} peaks ({len(mz_display):,} shown)"
+        else:
+            title = f"Spectrum #{spectrum_idx} | MS{ms_level} | RT={rt:.2f}s | {total_peaks:,} peaks"
 
         # Add precursor line for MS2+
         if ms_level > 1:
@@ -379,12 +465,16 @@ class SpectrumPanel(BasePanel):
                 linecolor="#888",
                 tickcolor="#888"
             )
-            # Auto-scale y-axis to visible peaks if enabled
+            # Auto-scale y-axis to visible peaks if enabled (use full array for accuracy)
             if self.state.spectrum_auto_scale:
                 xmin, xmax = self.state.spectrum_zoom_range
                 visible_mask = (mz_array >= xmin) & (mz_array <= xmax)
                 if np.any(visible_mask):
-                    visible_max = float(int_display[visible_mask].max())
+                    # Use original int_array for accurate max calculation
+                    if self.state.spectrum_intensity_percent:
+                        visible_max = float(int_array[visible_mask].max() / max_int) * 100
+                    else:
+                        visible_max = float(int_array[visible_mask].max())
                     y_range = [0, visible_max / 0.95]
         else:
             fig.update_xaxes(showgrid=False, linecolor="#888", tickcolor="#888")
@@ -1045,8 +1135,8 @@ class SpectrumPanel(BasePanel):
             xmax = e.args.get("xaxis.range[1]")
             if xmin is not None and xmax is not None:
                 self.state.spectrum_zoom_range = (xmin, xmax)
-                # Re-render to apply auto-scale if enabled
-                if self.state.spectrum_auto_scale and self.state.selected_spectrum_idx is not None:
+                # Re-render to apply auto-scale or re-downsample for visible range
+                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling) and self.state.selected_spectrum_idx is not None:
                     self.show_spectrum(self.state.selected_spectrum_idx)
                 # Sync m/z range to IM peakmap if linking is enabled
                 if self.state.link_spectrum_mz_to_im and self.state.has_ion_mobility:
@@ -1055,8 +1145,8 @@ class SpectrumPanel(BasePanel):
                     self.state.emit_view_changed()
             elif e.args.get("xaxis.autorange"):
                 self.state.spectrum_zoom_range = None
-                # Re-render to reset y-axis if auto-scale enabled
-                if self.state.spectrum_auto_scale and self.state.selected_spectrum_idx is not None:
+                # Re-render to reset y-axis or re-downsample full spectrum
+                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling) and self.state.selected_spectrum_idx is not None:
                     self.show_spectrum(self.state.selected_spectrum_idx)
                 # Reset IM m/z range if linking is enabled
                 if self.state.link_spectrum_mz_to_im and self.state.has_ion_mobility:
@@ -1167,6 +1257,12 @@ class SpectrumPanel(BasePanel):
     def _toggle_auto_scale(self, e):
         """Toggle auto Y-axis scaling."""
         self.state.spectrum_auto_scale = e.value
+        if self.state.selected_spectrum_idx is not None:
+            self.show_spectrum(self.state.selected_spectrum_idx)
+
+    def _toggle_downsampling(self, e):
+        """Toggle spectrum downsampling."""
+        self.state.spectrum_downsampling = e.value
         if self.state.selected_spectrum_idx is not None:
             self.show_spectrum(self.state.selected_spectrum_idx)
 
