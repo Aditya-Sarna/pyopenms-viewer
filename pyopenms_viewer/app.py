@@ -11,18 +11,18 @@ from pathlib import Path
 from nicegui import app, run, ui
 
 from pyopenms_viewer.core.state import ViewerState
-from pyopenms_viewer.loaders import MzMLLoader, FeatureLoader, IDLoader
+from pyopenms_viewer.loaders import FeatureLoader, IDLoader, MzMLLoader
 from pyopenms_viewer.panels import (
-    PanelManager,
-    TICPanel,
-    PeakMapPanel,
-    SpectrumPanel,
     ChromatogramPanel,
-    IMPeakMapPanel,
-    SpectraTablePanel,
-    FeaturesTablePanel,
     CustomRangePanel,
     FAIMSPanel,
+    FeaturesTablePanel,
+    IMPeakMapPanel,
+    PanelManager,
+    PeakMapPanel,
+    SpectraTablePanel,
+    SpectrumPanel,
+    TICPanel,
 )
 
 
@@ -224,12 +224,14 @@ async def create_ui():
             # Clear menu (dropdown)
             def clear_features():
                 state.clear_features()
+                state.emit_data_loaded("features")  # Trigger UI updates
                 state.emit_view_changed()
                 if feature_info_label:
                     feature_info_label.set_text("")
 
             def clear_ids():
                 state.clear_ids()
+                state.emit_data_loaded("ids")  # Trigger UI updates (spectra table, etc.)
                 state.emit_view_changed()
                 if id_info_label:
                     id_info_label.set_text("")

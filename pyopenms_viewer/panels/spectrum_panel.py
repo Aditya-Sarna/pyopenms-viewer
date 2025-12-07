@@ -908,6 +908,10 @@ class SpectrumPanel(BasePanel):
             # Auto-expand panel
             if self.expansion:
                 self.expansion.value = True
+        elif data_type == "ids":
+            # Refresh current spectrum to update annotations
+            if self.state.selected_spectrum_idx is not None:
+                self.show_spectrum(self.state.selected_spectrum_idx)
 
     def _on_selection_changed(self, selection_type: str, index: Optional[int]):
         """Handle selection changed event."""

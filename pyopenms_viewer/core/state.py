@@ -8,18 +8,19 @@ MEMORY SAFETY: Data structures are stored as references, never copied.
 Components access data via properties that return references or views (masks).
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, Callable, Any
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
 import numpy as np
 import pandas as pd
 
-from pyopenms_viewer.core.events import EventBus
 from pyopenms_viewer.core.config import (
-    DEFAULTS,
     DEFAULT_PANEL_ORDER,
     DEFAULT_PANEL_VISIBILITY,
+    DEFAULTS,
     PANEL_DEFINITIONS,
 )
+from pyopenms_viewer.core.events import EventBus
 
 
 @dataclass
@@ -508,6 +509,9 @@ class ViewerState:
 
     def clear_id_data(self) -> None:
         """Clear identification-related data."""
+        # Store meta keys before clearing (for clearing from spectrum_data)
+        old_meta_keys = self.id_meta_keys.copy()
+
         self.peptide_ids = []
         self.protein_ids = []
         self.id_file = None
@@ -515,6 +519,19 @@ class ViewerState:
         self.id_meta_keys = []
         self.selected_id_idx = None
         self.hover_id_idx = None
+
+        # Clear ID linkage from spectrum data
+        for spec_row in self.spectrum_data:
+            spec_row["sequence"] = "-"
+            spec_row["full_sequence"] = ""
+            spec_row["score"] = "-"
+            spec_row["id_idx"] = None
+            spec_row["hit_rank"] = "-"
+            spec_row["all_hits"] = []
+            # Clear meta value fields
+            for meta_key in old_meta_keys:
+                if meta_key in spec_row:
+                    spec_row[meta_key] = "-"
 
     def clear_all(self) -> None:
         """Clear all data."""
