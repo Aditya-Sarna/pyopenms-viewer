@@ -1,0 +1,619 @@
+"""Main application module for pyopenms-viewer.
+
+This module creates the NiceGUI interface and wires all components together
+using the modular panel architecture.
+"""
+
+import os
+import tempfile
+from pathlib import Path
+
+from nicegui import app, run, ui
+
+from pyopenms_viewer.core.state import ViewerState
+from pyopenms_viewer.loaders import FeatureLoader, IDLoader, MzMLLoader
+from pyopenms_viewer.panels import (
+    ChromatogramPanel,
+    CustomRangePanel,
+    FAIMSPanel,
+    FeaturesTablePanel,
+    IMPeakMapPanel,
+    PanelManager,
+    PeakMapPanel,
+    SpectraTablePanel,
+    SpectrumPanel,
+    TICPanel,
+)
+
+
+async def create_ui():
+    """Create the main NiceGUI interface.
+
+    This is called by NiceGUI as the root page handler.
+    """
+    # Create shared state (single instance for all components)
+    state = ViewerState()
+
+    # Setup dark mode
+    dark_mode = os.environ.get("PYOPENMS_VIEWER_DARK_MODE", "1") == "1"
+    dark = ui.dark_mode()
+    if dark_mode:
+        dark.enable()
+    else:
+        dark.disable()
+
+    # Store reference in state for potential toggling
+    state.dark = dark
+
+    # Top-right corner buttons (dark mode toggle + fullscreen)
+    with ui.element("div").classes("fixed top-2 right-2 z-50 flex gap-1"):
+
+        def toggle_dark_mode():
+            dark.toggle()
+            dark_btn.props(f"icon={'light_mode' if dark.value else 'dark_mode'}")
+            dark_btn._props["icon"] = "light_mode" if dark.value else "dark_mode"
+            dark_btn.update()
+
+        dark_btn = (
+            ui.button(icon="light_mode", on_click=toggle_dark_mode)
+            .props("flat round dense color=grey")
+            .tooltip("Toggle dark/light mode")
+        )
+        ui.button(
+            icon="fullscreen",
+            on_click=lambda: ui.run_javascript("""
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        """),
+        ).props("flat round dense color=grey").tooltip("Toggle fullscreen (F11)")
+
+    with ui.column().classes("w-full items-center p-2"):
+        # Compact toolbar for file operations and info display
+        with ui.row().classes("w-full max-w-[1700px] items-center gap-2 px-2 py-1 rounded").style(
+            "background: rgba(128,128,128,0.1);"
+        ):
+            # Setup helper functions for file loading
+            async def load_mzml(filepath: str, original_name: str = None):
+                """Load mzML file in background."""
+                loader = MzMLLoader(state)
+                name = original_name or Path(filepath).name
+                ui.notify(f"Loading {name}...", type="info")
+
+                # Run in background thread
+                success = await run.io_bound(loader.load_sync, filepath)
+
+                if success:
+                    # If IDs were already loaded, link them to the new spectra
+                    if state.peptide_ids:
+                        from pyopenms_viewer.loaders import link_ids_to_spectra
+                        link_ids_to_spectra(state)
+                        n_linked = sum(1 for s in state.spectrum_data if s.get("id_idx") is not None)
+                        if id_info_label:
+                            id_info_label.set_text(f"IDs: {len(state.peptide_ids):,} ({n_linked} linked)")
+
+                    state.emit_data_loaded("mzml")
+                    info_text = f"Loaded: {name} | Spectra: {state.exp.size():,} | Peaks: {len(state.df):,}"
+                    if state.has_faims:
+                        info_text += f" | FAIMS: {len(state.faims_cvs)} CVs"
+                    if info_label:
+                        info_label.set_text(info_text)
+                    ui.notify(f"Loaded {len(state.df):,} peaks from {name}", type="positive")
+                else:
+                    ui.notify(f"Failed to load {name}", type="negative")
+
+            # Store load_mzml in state for use by panels
+            state._load_mzml = load_mzml
+
+            async def handle_upload(e):
+                """Handle uploaded file - detect type and load appropriately.
+
+                NiceGUI 3.x: UploadEventArguments has .file attribute (FileUpload object)
+                FileUpload has: .name, .content_type, async .read(), async .save(path)
+                """
+                file = e.file
+                filename = file.name.lower()
+                original_name = file.name
+
+                # Save to temp file using FileUpload.save()
+                suffix = Path(filename).suffix
+                tmp_path = tempfile.mktemp(suffix=suffix)
+                await file.save(tmp_path)
+
+                try:
+                    if filename.endswith(".mzml"):
+                        await load_mzml(tmp_path, original_name)
+
+                    elif filename.endswith(".featurexml") or (filename.endswith(".xml") and "feature" in filename):
+                        loader = FeatureLoader(state)
+                        success = await run.io_bound(loader.load_sync, tmp_path)
+                        if success:
+                            state.emit_data_loaded("features")
+                            if feature_info_label:
+                                feature_info_label.set_text(f"Features: {state.feature_map.size():,}")
+                            ui.notify(f"Loaded {state.feature_map.size():,} features from {original_name}", type="positive")
+
+                    elif filename.endswith(".idxml") or (filename.endswith(".xml") and "id" in filename):
+                        loader = IDLoader(state)
+                        success = await run.io_bound(loader.load_sync, tmp_path)
+                        if success:
+                            state.emit_data_loaded("ids")
+                            n_linked = sum(1 for s in state.spectrum_data if s.get("id_idx") is not None)
+                            if id_info_label:
+                                id_info_label.set_text(f"IDs: {len(state.peptide_ids):,} ({n_linked} linked)")
+                            ui.notify(
+                                f"Loaded {len(state.peptide_ids):,} IDs ({n_linked} linked) from {original_name}",
+                                type="positive",
+                            )
+
+                    else:
+                        ui.notify(
+                            f"Unknown file type: {original_name}. Supported: .mzML, .featureXML, .idXML", type="warning"
+                        )
+
+                except Exception as ex:
+                    ui.notify(f"Error loading {original_name}: {ex}", type="negative")
+
+                finally:
+                    # Clean up temp file
+                    try:
+                        Path(tmp_path).unlink()
+                    except Exception:
+                        pass
+
+            async def open_native_file_dialog():
+                """Open native file dialog to select files directly from filesystem."""
+                if not app.native.main_window:
+                    ui.notify("Native file dialog is only available in native mode (--native)", type="warning")
+                    return
+
+                try:
+                    files = await app.native.main_window.create_file_dialog(
+                        allow_multiple=True,
+                        file_types=(
+                            "Mass Spec Files (*.mzML;*.featureXML;*.idXML)",
+                            "mzML Files (*.mzML)",
+                            "Feature Files (*.featureXML)",
+                            "ID Files (*.idXML)",
+                            "All Files (*.*)",
+                        ),
+                    )
+
+                    if not files:
+                        return
+
+                    for filepath in files:
+                        ext = Path(filepath).suffix.lower()
+                        name = Path(filepath).name
+
+                        try:
+                            if ext == ".mzml":
+                                await load_mzml(filepath, name)
+                            elif ext == ".featurexml":
+                                loader = FeatureLoader(state)
+                                success = await run.io_bound(loader.load_sync, filepath)
+                                if success:
+                                    state.emit_data_loaded("features")
+                                    ui.notify(f"Loaded {state.feature_map.size():,} features from {name}", type="positive")
+                            elif ext == ".idxml":
+                                loader = IDLoader(state)
+                                success = await run.io_bound(loader.load_sync, filepath)
+                                if success:
+                                    state.emit_data_loaded("ids")
+                                    ui.notify(f"Loaded IDs from {name}", type="positive")
+                            else:
+                                ui.notify(f"Unknown file type: {name}", type="warning")
+                        except Exception as ex:
+                            ui.notify(f"Error loading {name}: {ex}", type="negative")
+
+                except Exception as ex:
+                    ui.notify(f"File dialog error: {ex}", type="negative")
+
+            # Open button (native mode)
+            ui.button(
+                icon="folder_open",
+                on_click=open_native_file_dialog,
+            ).props("flat dense").tooltip("Open files (native mode)")
+
+            # Compact drop zone
+            ui.upload(
+                label="Drop files here",
+                on_upload=handle_upload,
+                auto_upload=True,
+                multiple=True,
+            ).classes("w-40").props(
+                'accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat dense bordered'
+            ).style("min-height: 32px;")
+
+            ui.separator().props("vertical").classes("h-6")
+
+            # Clear menu (dropdown)
+            def clear_features():
+                state.clear_features()
+                state.emit_data_loaded("features")  # Trigger UI updates
+                state.emit_view_changed()
+                if feature_info_label:
+                    feature_info_label.set_text("")
+
+            def clear_ids():
+                state.clear_ids()
+                state.emit_data_loaded("ids")  # Trigger UI updates (spectra table, etc.)
+                state.emit_view_changed()
+                if id_info_label:
+                    id_info_label.set_text("")
+
+            def clear_all():
+                state.clear_all()
+                if info_label:
+                    info_label.set_text("No file loaded")
+                clear_features()
+                clear_ids()
+
+            with ui.button(icon="delete_outline").props("flat dense size=sm").tooltip("Clear data"):
+                with ui.menu().props("auto-close"):
+                    ui.menu_item("Clear Features", on_click=clear_features).classes("text-cyan-400")
+                    ui.menu_item("Clear IDs", on_click=clear_ids).classes("text-orange-400")
+                    ui.separator()
+                    ui.menu_item("Clear All", on_click=clear_all).classes("text-red-400")
+
+            ui.separator().props("vertical").classes("h-6")
+
+            # Settings button for panel order
+            def show_panel_settings():
+                with ui.dialog() as dialog, ui.card().classes("min-w-[400px]"):
+                    ui.label("Panel Configuration").classes("text-lg font-bold mb-2")
+
+                    # Panel visibility section
+                    ui.label("Visibility").classes("text-sm font-semibold text-gray-400 mt-2")
+                    ui.label("Toggle panels on/off. 'Auto' hides when no data.").classes(
+                        "text-xs text-gray-500 mb-2"
+                    )
+
+                    visibility_container = ui.column().classes("w-full gap-1 mb-4")
+
+                    # Panels that support "auto" visibility
+                    auto_panels = {"chromatograms", "im_peakmap", "features_table"}
+
+                    def refresh_visibility():
+                        visibility_container.clear()
+                        with visibility_container:
+                            for panel_id in state.panel_order:
+                                panel_def = state.panel_definitions.get(panel_id, {})
+                                current_vis = state.panel_visibility.get(panel_id, True)
+
+                                with ui.row().classes("w-full items-center gap-2"):
+                                    ui.icon(panel_def.get("icon", "widgets")).classes("text-gray-400 text-sm")
+                                    ui.label(panel_def.get("name", panel_id)).classes("flex-grow text-sm")
+
+                                    if panel_id in auto_panels:
+                                        options = ["Hide", "Auto", "Show"]
+                                        if current_vis is False:
+                                            current_val = "Hide"
+                                        elif current_vis == "auto":
+                                            current_val = "Auto"
+                                        else:
+                                            current_val = "Show"
+
+                                        def make_toggle_handler(pid=panel_id):
+                                            def handler(e):
+                                                if e.value == "Hide":
+                                                    state.panel_visibility[pid] = False
+                                                elif e.value == "Auto":
+                                                    state.panel_visibility[pid] = "auto"
+                                                else:
+                                                    state.panel_visibility[pid] = True
+
+                                            return handler
+
+                                        ui.toggle(options, value=current_val, on_change=make_toggle_handler()).props(
+                                            "dense size=sm"
+                                        ).classes("text-xs")
+                                    else:
+                                        def make_checkbox_handler(pid=panel_id):
+                                            def handler(e):
+                                                state.panel_visibility[pid] = e.value
+
+                                            return handler
+
+                                        ui.checkbox(
+                                            "", value=current_vis is True, on_change=make_checkbox_handler()
+                                        ).props("dense")
+
+                    refresh_visibility()
+
+                    ui.separator().classes("my-2")
+
+                    # Panel order section
+                    ui.label("Order").classes("text-sm font-semibold text-gray-400")
+                    ui.label("Reorder panels using arrows").classes("text-xs text-gray-500 mb-2")
+
+                    panel_list = ui.column().classes("w-full gap-1")
+
+                    def refresh_list():
+                        panel_list.clear()
+                        with panel_list:
+                            for idx, panel_id in enumerate(state.panel_order):
+                                panel_def = state.panel_definitions.get(panel_id, {})
+                                with ui.row().classes("w-full items-center gap-2 p-1 rounded").style(
+                                    "background: rgba(128,128,128,0.15);"
+                                ):
+                                    ui.icon(panel_def.get("icon", "widgets")).classes("text-gray-400 text-sm")
+                                    ui.label(panel_def.get("name", panel_id)).classes("flex-grow text-sm")
+
+                                    def move_up(i=idx):
+                                        if i > 0:
+                                            state.panel_order[i], state.panel_order[i - 1] = (
+                                                state.panel_order[i - 1],
+                                                state.panel_order[i],
+                                            )
+                                            refresh_list()
+                                            refresh_visibility()
+
+                                    def move_down(i=idx):
+                                        if i < len(state.panel_order) - 1:
+                                            state.panel_order[i], state.panel_order[i + 1] = (
+                                                state.panel_order[i + 1],
+                                                state.panel_order[i],
+                                            )
+                                            refresh_list()
+                                            refresh_visibility()
+
+                                    ui.button(icon="keyboard_arrow_up", on_click=move_up).props(
+                                        "flat dense size=sm"
+                                    ).set_enabled(idx > 0)
+                                    ui.button(icon="keyboard_arrow_down", on_click=move_down).props(
+                                        "flat dense size=sm"
+                                    ).set_enabled(idx < len(state.panel_order) - 1)
+
+                    refresh_list()
+
+                    with ui.row().classes("w-full justify-end gap-2 mt-4"):
+
+                        def apply_settings():
+                            # Reorder panels using move()
+                            if state.panels_container:
+                                for idx, panel_id in enumerate(state.panel_order):
+                                    if panel_id in state.panel_elements:
+                                        state.panel_elements[panel_id].move(target_index=idx)
+                            # Apply visibility
+                            state.update_panel_visibility()
+                            dialog.close()
+                            ui.notify("Panel settings updated", type="positive")
+
+                        ui.button("Cancel", on_click=dialog.close).props("flat")
+                        ui.button("Apply", on_click=apply_settings).props("color=primary")
+
+                dialog.open()
+
+            ui.button(icon="tune", on_click=show_panel_settings).props("flat dense").tooltip("Panel Settings")
+
+            # Spacer to push info to the right
+            ui.space()
+
+            # Inline info labels
+            info_label = ui.label("No file loaded").classes("text-xs text-gray-400")
+            feature_info_label = ui.label("").classes("text-xs text-cyan-400")
+            id_info_label = ui.label("").classes("text-xs text-orange-400")
+            faims_info_label = ui.label("").classes("text-xs text-purple-400")
+            faims_info_label.set_visibility(False)
+
+            # Store labels in state for updates
+            state.info_label = info_label
+            state.feature_info_label = feature_info_label
+            state.id_info_label = id_info_label
+            state.faims_info_label = faims_info_label
+
+            # FAIMS toggle (hidden by default, shown when FAIMS data is detected)
+            def toggle_faims_view():
+                state.show_faims_view = faims_toggle.value
+                if state.faims_container:
+                    state.faims_container.set_visibility(state.show_faims_view)
+                if state.df is not None and state.show_faims_view:
+                    state.update_faims_plots()
+
+            faims_toggle = ui.checkbox("FAIMS", value=False, on_change=toggle_faims_view).props("dense").classes(
+                "text-xs text-purple-400"
+            )
+            faims_toggle.set_visibility(False)
+            state.faims_toggle = faims_toggle
+
+        # Panels container - holds all reorderable expansion panels
+        panels_container = ui.column().classes("w-full items-center gap-2")
+        state.panels_container = panels_container
+
+        # Create panel manager
+        panel_manager = PanelManager(state, panels_container)
+
+        # Create and register all panels
+        panels = [
+            TICPanel(state),
+            ChromatogramPanel(state),
+            PeakMapPanel(state),
+            IMPeakMapPanel(state),
+            SpectrumPanel(state),
+            SpectraTablePanel(state),
+            FeaturesTablePanel(state),
+            CustomRangePanel(state),
+        ]
+
+        for panel in panels:
+            panel.build(panels_container)
+            panel_manager.register(panel)
+
+        # FAIMS panel (not managed by PanelManager since it's a card, not expansion)
+        faims_panel = FAIMSPanel(state)
+        faims_panel.build(panels_container)
+
+        # Help panel
+        with panels_container:
+            with ui.expansion("Help", icon="help", value=False).classes("w-full max-w-[1700px]") as legend_exp:
+                with ui.row().classes("gap-6 flex-wrap w-full"):
+                    # Keyboard Shortcuts
+                    with ui.card().classes("p-3").style("min-width: 280px;"):
+                        ui.label("Keyboard Shortcuts").classes("font-bold text-lg mb-2")
+                        ui.markdown("""
+| Key | Action |
+|-----|--------|
+| `+` or `=` | Zoom in |
+| `-` | Zoom out |
+| `Left` `Right` | Pan left/right (RT) |
+| `Up` `Down` | Pan up/down (m/z) |
+| `Home` | Reset to full view |
+| `Delete` | Delete selected measurement |
+| `F11` | Toggle fullscreen |
+""").classes("text-sm")
+
+                    # Mouse Controls
+                    with ui.card().classes("p-3").style("min-width: 280px;"):
+                        ui.label("Mouse Controls").classes("font-bold text-lg mb-2")
+                        ui.markdown("""
+| Action | Effect |
+|--------|--------|
+| **Scroll wheel** | Zoom in/out at cursor |
+| **Drag** | Select region to zoom |
+| **Shift + Drag** | Measure distance |
+| **Ctrl + Drag** | Pan (grab & move) |
+| **Double-click** | Reset to full view |
+| **Click TIC** | Jump to spectrum at RT |
+| **Click table row** | Select spectrum/feature |
+""").classes("text-sm")
+
+                    # 1D Spectrum Controls
+                    with ui.card().classes("p-3").style("min-width: 280px;"):
+                        ui.label("1D Spectrum Tools").classes("font-bold text-lg mb-2")
+                        ui.markdown("""
+| Tool | Usage |
+|------|-------|
+| **Measure** | Click two peaks to measure m/z |
+| **Label** | Click peak to add annotation |
+| **m/z Labels** | Toggle to show all peak m/z |
+| **Auto Y** | Auto-scale Y-axis to visible |
+| **Navigation** | < > prev/next, MS1/MS2 by level |
+| **3D View** | Toggle 3D surface visualization |
+""").classes("text-sm")
+
+                    # Overlay Colors
+                    with ui.card().classes("p-3").style("min-width: 220px;"):
+                        ui.label("Overlay Colors").classes("font-bold text-lg mb-2")
+                        with ui.column().classes("gap-1"):
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#00ff64;border-radius:50%;'
+                                    'border:1px solid white;"></div>',
+                                    sanitize=False,
+                                )
+                                ui.label("Feature Centroid").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html(
+                                    '<div style="width:14px;height:14px;border:2px solid #ffff00;"></div>',
+                                    sanitize=False,
+                                )
+                                ui.label("Feature Bounding Box").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:rgba(0,200,255,0.5);'
+                                    'border:1px solid #00c8ff;"></div>',
+                                    sanitize=False,
+                                )
+                                ui.label("Feature Convex Hull").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#ff9632;'
+                                    'transform:rotate(45deg);"></div>',
+                                    sanitize=False,
+                                )
+                                ui.label("ID Precursor").classes("text-sm")
+
+                    # Ion Colors
+                    with ui.card().classes("p-3").style("min-width: 180px;"):
+                        ui.label("Ion Annotations").classes("font-bold text-lg mb-2")
+                        with ui.column().classes("gap-1"):
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html('<div style="width:14px;height:14px;background:#1f77b4;"></div>', sanitize=False)
+                                ui.label("b-ions").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html('<div style="width:14px;height:14px;background:#d62728;"></div>', sanitize=False)
+                                ui.label("y-ions").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html('<div style="width:14px;height:14px;background:#2ca02c;"></div>', sanitize=False)
+                                ui.label("a-ions").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html('<div style="width:14px;height:14px;background:#ff7f0e;"></div>', sanitize=False)
+                                ui.label("Precursor").classes("text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.html('<div style="width:14px;height:14px;background:#7f7f7f;"></div>', sanitize=False)
+                                ui.label("Unmatched").classes("text-sm")
+
+                    # File Types
+                    with ui.card().classes("p-3").style("min-width: 200px;"):
+                        ui.label("Supported Files").classes("font-bold text-lg mb-2")
+                        ui.markdown("""
+| Extension | Content |
+|-----------|---------|
+| `.mzML` | MS peak data |
+| `.featureXML` | Detected features |
+| `.idXML` | Peptide IDs |
+""").classes("text-sm")
+                        ui.label("Tips:").classes("font-semibold mt-2 text-sm")
+                        ui.markdown("""
+- Drag & drop files to load
+- Use `--native` for file dialog
+- Load multiple files at once
+""").classes("text-xs text-gray-400")
+
+                state.panel_elements["legend"] = legend_exp
+
+        # Keyboard handlers (NiceGUI 3.x API)
+        def on_global_key(e):
+            if not e.action.keydown:
+                return
+            if e.key in ["+", "="]:
+                state.zoom_in()
+            elif e.key == "-":
+                state.zoom_out()
+            elif e.key.arrow_left:
+                state.pan(rt_frac=-0.1)
+            elif e.key.arrow_right:
+                state.pan(rt_frac=0.1)
+            elif e.key.arrow_up:
+                state.pan(mz_frac=0.1)
+            elif e.key.arrow_down:
+                state.pan(mz_frac=-0.1)
+            elif e.key == "Home":
+                state.reset_view()
+            elif e.key in ["Delete", "Backspace"]:
+                # Delete selected measurement in spectrum browser
+                if hasattr(state, 'spectrum_selected_measurement_idx') and state.spectrum_selected_measurement_idx is not None:
+                    state.delete_selected_measurement()
+
+        ui.keyboard(on_key=on_global_key)
+
+    # Load CLI files after UI is ready
+    async def load_cli_files():
+        from pyopenms_viewer.cli import get_cli_files
+        cli_files = get_cli_files()
+
+        if cli_files["mzml"]:
+            await load_mzml(cli_files["mzml"])
+
+        if cli_files["featurexml"]:
+            loader = FeatureLoader(state)
+            if loader.load_sync(cli_files["featurexml"]):
+                state.emit_data_loaded("features")
+                ui.notify("Loaded features", type="positive")
+
+        if cli_files["idxml"]:
+            loader = IDLoader(state)
+            if loader.load_sync(cli_files["idxml"]):
+                state.emit_data_loaded("ids")
+                ui.notify("Loaded IDs", type="positive")
+
+    await load_cli_files()
+
+
+# Register the page
+@ui.page("/")
+async def index():
+    await create_ui()
