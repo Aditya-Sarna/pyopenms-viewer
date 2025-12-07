@@ -290,16 +290,16 @@ class SpectrumPanel(BasePanel):
         # Check if there's a matching peptide ID for annotation
         matching_id_idx = self.state.find_matching_id_for_spectrum(spectrum_idx)
 
-        if matching_id_idx is not None and self.state.annotate_peaks:
-            # Use annotated spectrum display
-            fig = self._create_annotated_spectrum_figure(
-                spec, mz_array, int_array, spectrum_idx, matching_id_idx
-            )
-            # Update info label with ID info
-            if self.info_label is not None:
-                pep_id = self.state.peptide_ids[matching_id_idx]
-                hits = pep_id.getHits()
-                if hits:
+        if matching_id_idx is not None:
+            # Use annotated spectrum display (shows sequence in title even if peak coloring is off)
+            pep_id = self.state.peptide_ids[matching_id_idx]
+            hits = pep_id.getHits()
+            if hits:
+                fig = self._create_annotated_spectrum_figure(
+                    spec, mz_array, int_array, spectrum_idx, matching_id_idx
+                )
+                # Update info label with ID info
+                if self.info_label is not None:
                     best_hit = hits[0]
                     sequence_str = best_hit.getSequence().toString()
                     charge = best_hit.getCharge()
@@ -308,7 +308,11 @@ class SpectrumPanel(BasePanel):
                     self.info_label.set_text(
                         f"RT: {rt:.2f}s | ID: {sequence_str} | Charge: {charge}+ | Precursor: {prec_mz:.4f}"
                     )
-        else:
+            else:
+                # No hits, fall back to regular display
+                matching_id_idx = None
+
+        if matching_id_idx is None:
             # Regular spectrum display (no annotation)
             fig = self._create_spectrum_figure(spec, mz_array, int_array, spectrum_idx)
             # Update info label
@@ -529,19 +533,19 @@ class SpectrumPanel(BasePanel):
         precursors = spec.getPrecursors()
         prec_mz = precursors[0].getMZ() if precursors else pep_id.getMZ()
 
-        # Get peak annotations
+        # Get peak annotations only if annotation is enabled
         peak_annotations = None
-
-        # First check for external peak annotations (from specialized tools like OpenNuXL)
-        peak_annotations = get_external_peak_annotations_from_hit(
-            best_hit, mz_array, tolerance_da=self.state.annotation_tolerance_da
-        )
-
-        if not peak_annotations:
-            # Fall back to generating annotations with SpectrumAnnotator
-            peak_annotations = annotate_spectrum_with_id(
-                spec, best_hit, tolerance_da=self.state.annotation_tolerance_da
+        if self.state.annotate_peaks:
+            # First check for external peak annotations (from specialized tools like OpenNuXL)
+            peak_annotations = get_external_peak_annotations_from_hit(
+                best_hit, mz_array, tolerance_da=self.state.annotation_tolerance_da
             )
+
+            if not peak_annotations:
+                # Fall back to generating annotations with SpectrumAnnotator
+                peak_annotations = annotate_spectrum_with_id(
+                    spec, best_hit, tolerance_da=self.state.annotation_tolerance_da
+                )
 
         # Create annotated spectrum plot
         fig = create_annotated_spectrum_plot(

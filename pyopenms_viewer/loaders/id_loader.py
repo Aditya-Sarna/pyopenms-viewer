@@ -1,6 +1,7 @@
 """idXML file loading and processing."""
 
 from typing import Any
+
 from pyopenms import IdXMLFile
 
 from pyopenms_viewer.core.state import ViewerState
@@ -179,18 +180,22 @@ def link_ids_to_spectra(state: ViewerState, rt_tolerance: float = 5.0, mz_tolera
                 best_match = spec_row
 
         # Update matching spectrum with ID info
+        # Only update if this is a better match (closer RT) or no existing match
         if best_match is not None:
-            best_hit = all_hits_data[0]
-            best_match["sequence"] = best_hit["sequence"]
-            best_match["full_sequence"] = best_hit["full_sequence"]
-            best_match["score"] = best_hit["score"]
-            best_match["id_idx"] = id_idx
-            best_match["hit_rank"] = best_hit["hit_rank"]
-            best_match["all_hits"] = all_hits_data
+            existing_rt_diff = best_match.get("_rt_diff", float("inf"))
+            if best_match["id_idx"] is None or best_rt_diff < existing_rt_diff:
+                best_hit = all_hits_data[0]
+                best_match["sequence"] = best_hit["sequence"]
+                best_match["full_sequence"] = best_hit["full_sequence"]
+                best_match["score"] = best_hit["score"]
+                best_match["id_idx"] = id_idx
+                best_match["hit_rank"] = best_hit["hit_rank"]
+                best_match["all_hits"] = all_hits_data
+                best_match["_rt_diff"] = best_rt_diff  # Track for comparison
 
-            # Copy meta values
-            for meta_key, value in best_hit["meta_values"].items():
-                best_match[meta_key] = value
+                # Copy meta values
+                for meta_key, value in best_hit["meta_values"].items():
+                    best_match[meta_key] = value
 
 
 class IDLoader:
