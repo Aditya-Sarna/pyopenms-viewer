@@ -12,6 +12,7 @@ from nicegui import ui
 
 from pyopenms_viewer.annotation.spectrum_annotator import (
     annotate_spectrum_with_id,
+    compute_spectrum_annotation,
     create_annotated_spectrum_plot,
     get_external_peak_annotations_from_hit,
 )
@@ -543,33 +544,42 @@ class SpectrumPanel(BasePanel):
         precursors = spec.getPrecursors()
         prec_mz = precursors[0].getMZ() if precursors else pep_id.getMZ()
 
-        # Get peak annotations only if annotation is enabled
-        peak_annotations = None
+        # Compute annotation data
+        annotation_data = None
         if self.state.annotate_peaks:
             # First check for external peak annotations (from specialized tools like OpenNuXL)
-            peak_annotations = get_external_peak_annotations_from_hit(
+            external_annotations = get_external_peak_annotations_from_hit(
                 best_hit, mz_array, tolerance_da=self.state.annotation_tolerance_da
             )
 
-            if not peak_annotations:
-                # Fall back to generating annotations with SpectrumAnnotator
-                peak_annotations = annotate_spectrum_with_id(
+            if not external_annotations:
+                # Check for annotations from SpectrumAnnotator
+                external_annotations = annotate_spectrum_with_id(
                     spec, best_hit, tolerance_da=self.state.annotation_tolerance_da
                 )
 
+            # Compute annotation data
+            annotation_data = compute_spectrum_annotation(
+                exp_mz=mz_array,
+                exp_int=int_array,
+                sequence_str=sequence_str,
+                charge=charge,
+                precursor_mz=prec_mz,
+                tolerance_da=self.state.annotation_tolerance_da,
+                external_annotations=external_annotations if external_annotations else None,
+            )
+
         # Create annotated spectrum plot
-        print(f"DEBUG spectrum_panel: calling create_annotated_spectrum_plot with annotate={self.state.annotate_peaks}, mirror_mode={self.state.mirror_annotation_view}, show_unmatched={self.state.show_unmatched_theoretical}")
         fig = create_annotated_spectrum_plot(
             mz_array,
             int_array,
             sequence_str,
             charge,
             prec_mz,
-            tolerance_da=self.state.annotation_tolerance_da,
-            peak_annotations=peak_annotations,
             annotate=self.state.annotate_peaks,
             mirror_mode=self.state.mirror_annotation_view,
             show_unmatched=self.state.show_unmatched_theoretical,
+            annotation_data=annotation_data,
         )
 
         # Update title to include spectrum index

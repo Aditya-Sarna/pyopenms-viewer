@@ -1,12 +1,50 @@
 """Theoretical spectrum generation for peptide annotation."""
 
+from dataclasses import dataclass
+
 from pyopenms import AASequence, MSSpectrum, TheoreticalSpectrumGenerator
+
+
+@dataclass
+class TheoreticalIon:
+    """A single theoretical ion with m/z, name, type, and optional intensity."""
+
+    mz: float
+    name: str
+    ion_type: str
+    intensity: float = 1.0  # Default to 1.0 (equal intensity) if not predicted
+
+
+@dataclass
+class TheoreticalSpectrum:
+    """Complete theoretical spectrum with all ion types."""
+
+    ions: list[TheoreticalIon]
+    sequence: str
+    charge: int
+
+    def get_ions_by_type(self, ion_type: str) -> list[TheoreticalIon]:
+        """Get all ions of a specific type."""
+        return [ion for ion in self.ions if ion.ion_type == ion_type]
+
+    @property
+    def b_ions(self) -> list[TheoreticalIon]:
+        return self.get_ions_by_type("b")
+
+    @property
+    def y_ions(self) -> list[TheoreticalIon]:
+        return self.get_ions_by_type("y")
+
+    @property
+    def a_ions(self) -> list[TheoreticalIon]:
+        return self.get_ions_by_type("a")
 
 
 def generate_theoretical_spectrum(
     sequence: AASequence,
     charge: int,
-) -> dict[str, list[tuple[float, str]]]:
+    add_isotopes: bool = False,
+) -> TheoreticalSpectrum:
     """Generate theoretical b/y/a ion spectrum for annotation.
 
     Uses pyOpenMS TheoreticalSpectrumGenerator to create a theoretical
@@ -15,10 +53,11 @@ def generate_theoretical_spectrum(
     Args:
         sequence: AASequence object representing the peptide
         charge: Precursor charge state
+        add_isotopes: Whether to add isotope peaks (default: False)
 
     Returns:
-        Dictionary with keys "b", "y", "a", "other" containing lists of
-        (m/z, ion_name) tuples for each ion type
+        TheoreticalSpectrum containing all generated ions with m/z, names,
+        types, and intensities
     """
     tsg = TheoreticalSpectrumGenerator()
     spec = MSSpectrum()
@@ -32,12 +71,14 @@ def generate_theoretical_spectrum(
     params.setValue("add_x_ions", "false")
     params.setValue("add_z_ions", "false")
     params.setValue("add_metainfo", "true")
+    if add_isotopes:
+        params.setValue("add_isotopes", "true")
     tsg.setParameters(params)
 
     # Generate spectrum with charge states up to min(charge, 2)
     tsg.getSpectrum(spec, sequence, 1, min(charge, 2))
 
-    ions = {"b": [], "y": [], "a": [], "other": []}
+    ions = []
 
     # Get ion names from string data arrays
     ion_names = []
@@ -54,15 +95,31 @@ def generate_theoretical_spectrum(
 
     for i in range(spec.size()):
         mz = spec[i].getMZ()
+        intensity = spec[i].getIntensity()
         ion_name = ion_names[i] if i < len(ion_names) else ""
 
         if ion_name.startswith("b"):
-            ions["b"].append((mz, ion_name))
+            ion_type = "b"
         elif ion_name.startswith("y"):
-            ions["y"].append((mz, ion_name))
+            ion_type = "y"
         elif ion_name.startswith("a"):
-            ions["a"].append((mz, ion_name))
+            ion_type = "a"
         elif ion_name:
-            ions["other"].append((mz, ion_name))
+            ion_type = "other"
+        else:
+            continue  # Skip peaks without ion names
 
-    return ions
+        ions.append(TheoreticalIon(
+            mz=mz,
+            name=ion_name,
+            ion_type=ion_type,
+            intensity=intensity if intensity > 0 else 1.0,
+        ))
+
+    return TheoreticalSpectrum(
+        ions=ions,
+        sequence=sequence.toString(),
+        charge=charge,
+    )
+
+

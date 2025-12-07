@@ -4,7 +4,13 @@ Fast mzML peak map viewer using NiceGUI, Datashader, and pyOpenMS. Designed to h
 
 ## Project Structure
 
-- `pyopenms_viewer.py` - Main application source (single-file application)
+- `pyopenms_viewer/` - Main application package
+  - `cli.py` - Command-line interface entry point
+  - `core/` - Core state and configuration
+  - `panels/` - UI panel components (spectrum, TIC, etc.)
+  - `annotation/` - Spectrum annotation and theoretical spectrum generation
+  - `loaders/` - File loaders (mzML, idXML, featureXML)
+  - `components/` - Reusable viewer components
 - `pyproject.toml` - Project configuration and dependencies
 - `.venv/` - Virtual environment (managed by uv)
 
