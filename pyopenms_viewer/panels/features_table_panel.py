@@ -4,7 +4,7 @@ This panel displays a table of detected features from featureXML files
 with filtering and zoom-to-feature functionality.
 """
 
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from nicegui import ui
 
@@ -207,31 +207,37 @@ class FeaturesTablePanel(BasePanel):
             rt = feature.getRT()
             mz = feature.getMZ()
 
-            # Get feature bounds from convex hull or use defaults
+            # Get feature bounds from ALL convex hulls or use defaults
             hulls = feature.getConvexHulls()
             if hulls:
-                hull = hulls[0]
-                points = hull.getHullPoints()
-                if len(points) > 0:
-                    rts = [p[0] for p in points]
-                    mzs = [p[1] for p in points]
+                all_points = []
+                for hull in hulls:
+                    points = hull.getHullPoints()
+                    all_points.extend([(p[0], p[1]) for p in points])
+
+                if all_points:
+                    rts = [p[0] for p in all_points]
+                    mzs = [p[1] for p in all_points]
                     rt_min, rt_max = min(rts), max(rts)
                     mz_min, mz_max = min(mzs), max(mzs)
-                    # Add padding
-                    rt_pad = (rt_max - rt_min) * 0.2 or 30
-                    mz_pad = (mz_max - mz_min) * 0.2 or 5
-                    rt_min -= rt_pad
-                    rt_max += rt_pad
-                    mz_min -= mz_pad
-                    mz_max += mz_pad
                 else:
                     # Default zoom
-                    rt_min, rt_max = rt - 30, rt + 30
-                    mz_min, mz_max = mz - 5, mz + 5
+                    rt_min, rt_max = rt - 10, rt + 10
+                    mz_min, mz_max = mz - 2, mz + 2
             else:
                 # Default zoom
-                rt_min, rt_max = rt - 30, rt + 30
-                mz_min, mz_max = mz - 5, mz + 5
+                rt_min, rt_max = rt - 10, rt + 10
+                mz_min, mz_max = mz - 2, mz + 2
+
+            # Ensure minimum zoom range and add padding
+            rt_range = max(rt_max - rt_min, 20)
+            mz_range = max(mz_max - mz_min, 4)
+            rt_pad = rt_range * 0.2
+            mz_pad = mz_range * 0.2
+            rt_min = rt_min - rt_pad
+            rt_max = rt_max + rt_pad
+            mz_min = mz_min - mz_pad
+            mz_max = mz_max + mz_pad
 
             # Update view bounds
             self.state.view_rt_min = max(self.state.rt_min, rt_min)

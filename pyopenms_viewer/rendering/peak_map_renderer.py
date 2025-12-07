@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pyopenms_viewer.annotation.tick_formatter import calculate_nice_ticks, format_tick_label
 from pyopenms_viewer.core.config import COLORMAPS, get_colormap_background
 from pyopenms_viewer.core.state import ViewerState
+from pyopenms_viewer.rendering.overlay_renderer import OverlayRenderer
 
 
 def _get_font(size: int = 11):
@@ -66,6 +67,14 @@ class PeakMapRenderer:
         self.margin_bottom = margin_bottom
         self.canvas_width = plot_width + margin_left + margin_right
         self.canvas_height = plot_height + margin_top + margin_bottom
+
+        # Overlay renderer for features, IDs, markers
+        self.overlay_renderer = OverlayRenderer(
+            plot_width=plot_width,
+            plot_height=plot_height,
+            margin_left=0,  # Overlay renders on plot area directly
+            margin_top=0,
+        )
 
     def render(
         self,
@@ -144,9 +153,13 @@ class PeakMapRenderer:
                 (self.plot_width, self.plot_height), Image.Resampling.NEAREST
             )
 
+        # Draw overlays on plot image (features, IDs, spectrum markers)
+        plot_img_rgba = plot_img.convert("RGBA")
+        if draw_overlays and not fast:
+            plot_img_rgba = self.overlay_renderer.draw_all(plot_img_rgba, state)
+
         # Compose final canvas
         canvas = Image.new("RGBA", (self.canvas_width, self.canvas_height), (0, 0, 0, 0))
-        plot_img_rgba = plot_img.convert("RGBA")
         canvas.paste(plot_img_rgba, (self.margin_left, self.margin_top))
 
         # Draw axes unless in fast mode
