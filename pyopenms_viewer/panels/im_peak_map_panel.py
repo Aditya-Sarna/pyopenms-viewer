@@ -185,11 +185,28 @@ class IMPeakMapPanel(BasePanel):
 
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
-        if data_type == "mzml" and self.state.has_ion_mobility:
-            self.update()
-            # Auto-expand if IM data present
-            if self.expansion:
-                self.expansion.value = True
+        if data_type == "mzml":
+            if self.state.has_ion_mobility:
+                self.update()
+                # Auto-expand if IM data present
+                if self.expansion:
+                    self.expansion.value = True
+            else:
+                # Clear display and collapse when loading non-IM data
+                self._clear_display()
+                if self.expansion:
+                    self.expansion.value = False
+
+    def _clear_display(self):
+        """Clear the IM display when no IM data is available."""
+        if self.im_image_element is not None:
+            # Set to transparent/empty image
+            self.im_image_element.set_source("")
+            self.im_image_element.content = ""
+        if self.info_label is not None:
+            self.info_label.set_text("No ion mobility data")
+        if self.range_label is not None:
+            self.range_label.set_text("IM: --")
 
     def _on_view_changed(self):
         """Handle view changed event."""

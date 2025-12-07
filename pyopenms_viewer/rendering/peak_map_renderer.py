@@ -12,8 +12,20 @@ import datashader.transfer_functions as tf
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from pyopenms_viewer.annotation.tick_formatter import calculate_nice_ticks, format_tick_label
 from pyopenms_viewer.core.config import COLORMAPS, get_colormap_background
 from pyopenms_viewer.core.state import ViewerState
+
+
+def _get_font(size: int = 11):
+    """Get a font for rendering, with fallbacks."""
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+    except OSError:
+        try:
+            return ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf", size)
+        except OSError:
+            return ImageFont.load_default()
 
 
 class PeakMapRenderer:
@@ -137,12 +149,169 @@ class PeakMapRenderer:
         plot_img_rgba = plot_img.convert("RGBA")
         canvas.paste(plot_img_rgba, (self.margin_left, self.margin_top))
 
+        # Draw axes unless in fast mode
+        if draw_axes and not fast:
+            canvas = self._draw_axes(canvas, state, view_rt_min, view_rt_max, view_mz_min, view_mz_max)
+
         # Encode to base64
         buffer = io.BytesIO()
         canvas.save(buffer, format="PNG")
         buffer.seek(0)
 
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def _draw_axes(
+        self,
+        canvas: Image.Image,
+        state: ViewerState,
+        view_rt_min: float,
+        view_rt_max: float,
+        view_mz_min: float,
+        view_mz_max: float,
+    ) -> Image.Image:
+        """Draw axes, tick marks, and labels on the canvas.
+
+        Args:
+            canvas: PIL Image to draw on
+            state: ViewerState for settings
+            view_rt_min/max: RT range
+            view_mz_min/max: m/z range
+
+        Returns:
+            Modified canvas with axes drawn
+        """
+        draw = ImageDraw.Draw(canvas)
+        font = _get_font(11)
+        title_font = _get_font(12)
+
+        axis_color = (136, 136, 136, 255)
+        tick_color = (136, 136, 136, 255)
+        label_color = (136, 136, 136, 255)
+
+        plot_left = self.margin_left
+        plot_right = self.margin_left + self.plot_width
+        plot_top = self.margin_top
+        plot_bottom = self.margin_top + self.plot_height
+
+        # Draw border rectangle
+        draw.rectangle([plot_left, plot_top, plot_right, plot_bottom], outline=axis_color, width=1)
+
+        if state.swap_axes:
+            # X-axis: m/z, Y-axis: RT
+            x_ticks = calculate_nice_ticks(view_mz_min, view_mz_max, num_ticks=8)
+            x_range = view_mz_max - view_mz_min
+            x_min, x_max = view_mz_min, view_mz_max
+
+            for tick_val in x_ticks:
+                if x_min <= tick_val <= x_max:
+                    x_frac = (tick_val - x_min) / x_range
+                    x = plot_left + int(x_frac * self.plot_width)
+                    draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=tick_color, width=1)
+                    label = format_tick_label(tick_val, x_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    draw.text((x - label_width // 2, plot_bottom + 8), label, fill=label_color, font=font)
+
+            x_title = "m/z"
+            bbox = draw.textbbox((0, 0), x_title, font=title_font)
+            title_width = bbox[2] - bbox[0]
+            draw.text(
+                (plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+                x_title,
+                fill=label_color,
+                font=title_font,
+            )
+
+            # Y-axis: RT
+            if state.rt_in_minutes:
+                display_rt_min = view_rt_min / 60.0
+                display_rt_max = view_rt_max / 60.0
+                y_ticks_display = calculate_nice_ticks(display_rt_min, display_rt_max, num_ticks=8)
+                y_ticks = [t * 60.0 for t in y_ticks_display]
+            else:
+                y_ticks = calculate_nice_ticks(view_rt_min, view_rt_max, num_ticks=8)
+            y_range = view_rt_max - view_rt_min
+            y_min, y_max = view_rt_min, view_rt_max
+
+            for tick_val in y_ticks:
+                if y_min <= tick_val <= y_max:
+                    y_frac = 1 - (tick_val - y_min) / y_range
+                    y = plot_top + int(y_frac * self.plot_height)
+                    draw.line([(plot_left - 5, y), (plot_left, y)], fill=tick_color, width=1)
+                    display_val = tick_val / 60.0 if state.rt_in_minutes else tick_val
+                    display_range = y_range / 60.0 if state.rt_in_minutes else y_range
+                    label = format_tick_label(display_val, display_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    label_height = bbox[3] - bbox[1]
+                    draw.text(
+                        (plot_left - label_width - 10, y - label_height // 2), label, fill=label_color, font=font
+                    )
+
+            y_title = "RT (min)" if state.rt_in_minutes else "RT (s)"
+        else:
+            # X-axis: RT, Y-axis: m/z
+            if state.rt_in_minutes:
+                display_rt_min = view_rt_min / 60.0
+                display_rt_max = view_rt_max / 60.0
+                rt_ticks_display = calculate_nice_ticks(display_rt_min, display_rt_max, num_ticks=8)
+                rt_ticks = [t * 60.0 for t in rt_ticks_display]
+            else:
+                rt_ticks = calculate_nice_ticks(view_rt_min, view_rt_max, num_ticks=8)
+            rt_range = view_rt_max - view_rt_min
+
+            for tick_val in rt_ticks:
+                if view_rt_min <= tick_val <= view_rt_max:
+                    x_frac = (tick_val - view_rt_min) / rt_range
+                    x = plot_left + int(x_frac * self.plot_width)
+                    draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=tick_color, width=1)
+                    display_val = tick_val / 60.0 if state.rt_in_minutes else tick_val
+                    display_range = rt_range / 60.0 if state.rt_in_minutes else rt_range
+                    label = format_tick_label(display_val, display_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    draw.text((x - label_width // 2, plot_bottom + 8), label, fill=label_color, font=font)
+
+            x_title = "RT (min)" if state.rt_in_minutes else "RT (s)"
+            bbox = draw.textbbox((0, 0), x_title, font=title_font)
+            title_width = bbox[2] - bbox[0]
+            draw.text(
+                (plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+                x_title,
+                fill=label_color,
+                font=title_font,
+            )
+
+            # Y-axis: m/z
+            mz_ticks = calculate_nice_ticks(view_mz_min, view_mz_max, num_ticks=8)
+            mz_range = view_mz_max - view_mz_min
+
+            for tick_val in mz_ticks:
+                if view_mz_min <= tick_val <= view_mz_max:
+                    y_frac = 1 - (tick_val - view_mz_min) / mz_range
+                    y = plot_top + int(y_frac * self.plot_height)
+                    draw.line([(plot_left - 5, y), (plot_left, y)], fill=tick_color, width=1)
+                    label = format_tick_label(tick_val, mz_range)
+                    bbox = draw.textbbox((0, 0), label, font=font)
+                    label_width = bbox[2] - bbox[0]
+                    label_height = bbox[3] - bbox[1]
+                    draw.text(
+                        (plot_left - label_width - 10, y - label_height // 2), label, fill=label_color, font=font
+                    )
+
+            y_title = "m/z"
+
+        # Draw rotated Y-axis title
+        txt_img = Image.new("RGBA", (100, 30), (0, 0, 0, 0))
+        txt_draw = ImageDraw.Draw(txt_img)
+        txt_draw.text((0, 0), y_title, fill=label_color, font=title_font)
+        txt_img = txt_img.rotate(90, expand=True)
+
+        y_title_x = 5
+        y_title_y = plot_top + self.plot_height // 2 - txt_img.height // 2
+        canvas.paste(txt_img, (y_title_x, y_title_y), txt_img)
+
+        return canvas
 
     def render_faims(self, state: ViewerState, cv: float) -> str:
         """Render a single FAIMS CV peak map.
@@ -282,6 +451,9 @@ class IMPeakMapRenderer:
         plot_img_rgba = plot_img.convert("RGBA")
         canvas.paste(plot_img_rgba, (self.margin_left, self.margin_top))
 
+        # Draw axes
+        canvas = self._draw_axes(canvas, state, view_mz_min, view_mz_max, view_im_min, view_im_max)
+
         # Draw mobilogram on the right side if enabled
         if state.show_mobilogram:
             canvas = self._draw_mobilogram(canvas, state, view_mz_min, view_mz_max, view_im_min, view_im_max)
@@ -291,6 +463,98 @@ class IMPeakMapRenderer:
         buffer.seek(0)
 
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def _draw_axes(
+        self,
+        canvas: Image.Image,
+        state: ViewerState,
+        view_mz_min: float,
+        view_mz_max: float,
+        view_im_min: float,
+        view_im_max: float,
+    ) -> Image.Image:
+        """Draw axes, tick marks, and labels on the IM canvas.
+
+        Args:
+            canvas: PIL Image to draw on
+            state: ViewerState for settings
+            view_mz_min/max: m/z range
+            view_im_min/max: IM range
+
+        Returns:
+            Modified canvas with axes drawn
+        """
+        draw = ImageDraw.Draw(canvas)
+        font = _get_font(11)
+        title_font = _get_font(12)
+
+        axis_color = (136, 136, 136, 255)
+        tick_color = (136, 136, 136, 255)
+        label_color = (136, 136, 136, 255)
+
+        plot_left = self.margin_left
+        plot_right = self.margin_left + self.plot_width
+        plot_top = self.margin_top
+        plot_bottom = self.margin_top + self.plot_height
+
+        # Draw border rectangle
+        draw.rectangle([plot_left, plot_top, plot_right, plot_bottom], outline=axis_color, width=1)
+
+        # X-axis: m/z
+        x_ticks = calculate_nice_ticks(view_mz_min, view_mz_max, num_ticks=8)
+        x_range = view_mz_max - view_mz_min
+
+        for tick_val in x_ticks:
+            if view_mz_min <= tick_val <= view_mz_max:
+                x_frac = (tick_val - view_mz_min) / x_range
+                x = plot_left + int(x_frac * self.plot_width)
+                draw.line([(x, plot_bottom), (x, plot_bottom + 5)], fill=tick_color, width=1)
+                label = format_tick_label(tick_val, x_range)
+                bbox = draw.textbbox((0, 0), label, font=font)
+                label_width = bbox[2] - bbox[0]
+                draw.text((x - label_width // 2, plot_bottom + 8), label, fill=label_color, font=font)
+
+        x_title = "m/z"
+        bbox = draw.textbbox((0, 0), x_title, font=title_font)
+        title_width = bbox[2] - bbox[0]
+        draw.text(
+            (plot_left + self.plot_width // 2 - title_width // 2, plot_bottom + 28),
+            x_title,
+            fill=label_color,
+            font=title_font,
+        )
+
+        # Y-axis: Ion mobility
+        y_ticks = calculate_nice_ticks(view_im_min, view_im_max, num_ticks=8)
+        y_range = view_im_max - view_im_min
+
+        for tick_val in y_ticks:
+            if view_im_min <= tick_val <= view_im_max:
+                y_frac = 1 - (tick_val - view_im_min) / y_range
+                y = plot_top + int(y_frac * self.plot_height)
+                draw.line([(plot_left - 5, y), (plot_left, y)], fill=tick_color, width=1)
+                label = format_tick_label(tick_val, y_range)
+                bbox = draw.textbbox((0, 0), label, font=font)
+                label_width = bbox[2] - bbox[0]
+                label_height = bbox[3] - bbox[1]
+                draw.text(
+                    (plot_left - label_width - 10, y - label_height // 2), label, fill=label_color, font=font
+                )
+
+        # Y-axis title with unit
+        y_title = f"IM ({state.im_unit})" if state.im_unit else "Ion Mobility"
+
+        # Draw rotated Y-axis title
+        txt_img = Image.new("RGBA", (120, 30), (0, 0, 0, 0))
+        txt_draw = ImageDraw.Draw(txt_img)
+        txt_draw.text((0, 0), y_title, fill=label_color, font=title_font)
+        txt_img = txt_img.rotate(90, expand=True)
+
+        y_title_x = 5
+        y_title_y = plot_top + self.plot_height // 2 - txt_img.height // 2
+        canvas.paste(txt_img, (y_title_x, y_title_y), txt_img)
+
+        return canvas
 
     def _draw_mobilogram(
         self,
