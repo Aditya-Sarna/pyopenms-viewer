@@ -86,6 +86,14 @@ async def create_ui():
                 success = await run.io_bound(loader.load_sync, filepath)
 
                 if success:
+                    # If IDs were already loaded, link them to the new spectra
+                    if state.peptide_ids:
+                        from pyopenms_viewer.loaders import link_ids_to_spectra
+                        link_ids_to_spectra(state)
+                        n_linked = sum(1 for s in state.spectrum_data if s.get("id_idx") is not None)
+                        if id_info_label:
+                            id_info_label.set_text(f"IDs: {len(state.peptide_ids):,} ({n_linked} linked)")
+
                     state.emit_data_loaded("mzml")
                     info_text = f"Loaded: {name} | Spectra: {state.exp.size():,} | Peaks: {len(state.df):,}"
                     if state.has_faims:

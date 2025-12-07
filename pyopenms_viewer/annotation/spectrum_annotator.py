@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from pyopenms import (
     AASequence,
     MSSpectrum,
+    SpectrumAlignment,
     SpectrumAnnotator,
     TheoreticalSpectrumGenerator,
 )
@@ -45,56 +46,55 @@ def annotate_spectrum_with_id(
         params = tsg.getParameters()
         params.setValue("add_b_ions", "true")
         params.setValue("add_y_ions", "true")
-        params.setValue("add_a_ions", "false")
+        params.setValue("add_a_ions", "true")
         params.setValue("add_c_ions", "false")
         params.setValue("add_x_ions", "false")
         params.setValue("add_z_ions", "false")
         params.setValue("add_metainfo", "true")
         tsg.setParameters(params)
 
-        # Generate theoretical spectrum
-        theoretical = MSSpectrum()
-        sequence = peptide_hit.getSequence()
-        charge = max(1, peptide_hit.getCharge())
-        tsg.getSpectrum(theoretical, sequence, 1, min(charge, 2))
+        # Setup SpectrumAlignment with absolute tolerance in Da
+        sa = SpectrumAlignment()
+        sa_params = sa.getParameters()
+        sa_params.setValue("tolerance", tolerance_da)
+        sa_params.setValue("is_relative_tolerance", "false")
+        sa.setParameters(sa_params)
 
-        # Annotate using SpectrumAnnotator
+        # Setup SpectrumAnnotator
         annotator = SpectrumAnnotator()
-        annotator_params = annotator.getParameters()
-        annotator_params.setValue("fragment_mass_tolerance", tolerance_da)
-        annotator_params.setValue("fragment_mass_tolerance_unit", "Da")
-        annotator.setParameters(annotator_params)
 
-        annotator.annotateMatches(spec_copy, theoretical)
+        # Annotate the spectrum - this adds "IonNames" string data array
+        annotator.annotateMatches(spec_copy, peptide_hit, tsg, sa)
 
-        # Extract annotations from string data arrays
+        # Read annotations from spectrum's string data arrays
         string_arrays = spec_copy.getStringDataArrays()
-        ion_names_array = None
-        for sda in string_arrays:
-            if sda.getName() == "IonNames":
-                ion_names_array = sda
-                break
+        for arr in string_arrays:
+            arr_name = arr.getName()
+            # Handle both bytes and string for array name
+            if arr_name == "IonNames" or arr_name == b"IonNames":
+                for peak_idx, ion_name in enumerate(arr):
+                    if ion_name:
+                        # Handle bytes or string annotation
+                        if isinstance(ion_name, bytes):
+                            ion_name = ion_name.decode("utf-8", errors="ignore")
 
-        if ion_names_array is not None:
-            for i in range(len(ion_names_array)):
-                ion_name = ion_names_array[i]
-                if ion_name:
-                    # Determine ion type from name
-                    if ion_name.startswith("b"):
-                        ion_type = "b"
-                    elif ion_name.startswith("y"):
-                        ion_type = "y"
-                    elif ion_name.startswith("a"):
-                        ion_type = "a"
-                    elif ion_name.startswith("c"):
-                        ion_type = "c"
-                    elif ion_name.startswith("x"):
-                        ion_type = "x"
-                    elif ion_name.startswith("z"):
-                        ion_type = "z"
-                    else:
-                        ion_type = "unknown"
-                    annotations.append((i, ion_name, ion_type))
+                        # Determine ion type from name
+                        if ion_name.startswith("b"):
+                            ion_type = "b"
+                        elif ion_name.startswith("y"):
+                            ion_type = "y"
+                        elif ion_name.startswith("a"):
+                            ion_type = "a"
+                        elif ion_name.startswith("c"):
+                            ion_type = "c"
+                        elif ion_name.startswith("x"):
+                            ion_type = "x"
+                        elif ion_name.startswith("z"):
+                            ion_type = "z"
+                        else:
+                            ion_type = "unknown"
+                        annotations.append((peak_idx, ion_name, ion_type))
+                break
 
     except Exception as e:
         print(f"Error annotating spectrum: {e}")
