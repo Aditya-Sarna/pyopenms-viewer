@@ -54,6 +54,7 @@ class IMPeakMapPanel(BasePanel):
             "dragging": False,
             "start_x": 0,
             "start_y": 0,
+            "in_mobilogram": False,  # Track if drag started in mobilogram area
         }
 
     def build(self, container: ui.element) -> ui.expansion:
@@ -230,6 +231,26 @@ class IMPeakMapPanel(BasePanel):
 
     # === Mouse handlers ===
 
+    def _is_in_mobilogram(self, x: float, y: float) -> bool:
+        """Check if coordinates are in the mobilogram area."""
+        if not self.state.show_mobilogram:
+            return False
+
+        mob_left = self.state.margin_left + self.state.plot_width + 10
+        mob_right = mob_left + self.state.mobilogram_plot_width
+        mob_top = self.state.margin_top
+        mob_bottom = self.state.margin_top + self.state.plot_height
+
+        return mob_left <= x <= mob_right and mob_top <= y <= mob_bottom
+
+    def _get_mobilogram_bounds(self) -> tuple:
+        """Get mobilogram area pixel bounds."""
+        mob_left = self.state.margin_left + self.state.plot_width + 10
+        mob_right = mob_left + self.state.mobilogram_plot_width
+        mob_top = self.state.margin_top
+        mob_bottom = self.state.margin_top + self.state.plot_height
+        return mob_left, mob_right, mob_top, mob_bottom
+
     def _on_im_mouse(self, e):
         """Unified mouse handler for interactive_image on_mouse callback."""
         try:
@@ -241,6 +262,7 @@ class IMPeakMapPanel(BasePanel):
                 self._drag_state["dragging"] = True
                 self._drag_state["start_x"] = offset_x
                 self._drag_state["start_y"] = offset_y
+                self._drag_state["in_mobilogram"] = self._is_in_mobilogram(offset_x, offset_y)
 
             elif event_type == "mouseup":
                 if not self._drag_state["dragging"]:
@@ -249,40 +271,56 @@ class IMPeakMapPanel(BasePanel):
 
                 start_x = self._drag_state["start_x"]
                 start_y = self._drag_state["start_y"]
+                in_mobilogram = self._drag_state["in_mobilogram"]
 
-                # Check if significant drag
+                # Check if significant drag (only Y matters for mobilogram)
                 dx = abs(offset_x - start_x)
                 dy = abs(offset_y - start_y)
-                if dx < 5 and dy < 5:
+                min_drag = 5 if not in_mobilogram else 3  # Lower threshold for mobilogram Y-only
+                if (not in_mobilogram and dx < min_drag and dy < min_drag) or (in_mobilogram and dy < min_drag):
                     if self.im_image_element:
                         self.im_image_element.content = ""
                     return
 
-                # Convert to data coordinates
-                x1_frac = (min(start_x, offset_x) - self.state.margin_left) / self.state.plot_width
-                x2_frac = (max(start_x, offset_x) - self.state.margin_left) / self.state.plot_width
-                y1_frac = (min(start_y, offset_y) - self.state.margin_top) / self.state.plot_height
-                y2_frac = (max(start_y, offset_y) - self.state.margin_top) / self.state.plot_height
+                if in_mobilogram:
+                    # Mobilogram: only zoom IM axis (Y)
+                    mob_left, mob_right, mob_top, mob_bottom = self._get_mobilogram_bounds()
+                    y1_frac = (min(start_y, offset_y) - mob_top) / self.state.plot_height
+                    y2_frac = (max(start_y, offset_y) - mob_top) / self.state.plot_height
+                    y1_frac = max(0, min(1, y1_frac))
+                    y2_frac = max(0, min(1, y2_frac))
 
-                x1_frac = max(0, min(1, x1_frac))
-                x2_frac = max(0, min(1, x2_frac))
-                y1_frac = max(0, min(1, y1_frac))
-                y2_frac = max(0, min(1, y2_frac))
+                    im_range = self.state.view_im_max - self.state.view_im_min
+                    new_im_max = self.state.view_im_max - y1_frac * im_range
+                    new_im_min = self.state.view_im_max - y2_frac * im_range
 
-                # Calculate new view bounds
-                mz_range = self.state.view_mz_max - self.state.view_mz_min
-                im_range = self.state.view_im_max - self.state.view_im_min
+                    # Only update IM bounds (m/z stays the same)
+                    self.state.view_im_min = new_im_min
+                    self.state.view_im_max = new_im_max
+                else:
+                    # Main plot: zoom both m/z and IM
+                    x1_frac = (min(start_x, offset_x) - self.state.margin_left) / self.state.plot_width
+                    x2_frac = (max(start_x, offset_x) - self.state.margin_left) / self.state.plot_width
+                    y1_frac = (min(start_y, offset_y) - self.state.margin_top) / self.state.plot_height
+                    y2_frac = (max(start_y, offset_y) - self.state.margin_top) / self.state.plot_height
 
-                new_mz_min = self.state.view_mz_min + x1_frac * mz_range
-                new_mz_max = self.state.view_mz_min + x2_frac * mz_range
-                new_im_max = self.state.view_im_max - y1_frac * im_range  # Y inverted
-                new_im_min = self.state.view_im_max - y2_frac * im_range
+                    x1_frac = max(0, min(1, x1_frac))
+                    x2_frac = max(0, min(1, x2_frac))
+                    y1_frac = max(0, min(1, y1_frac))
+                    y2_frac = max(0, min(1, y2_frac))
 
-                # Apply new bounds
-                self.state.view_mz_min = new_mz_min
-                self.state.view_mz_max = new_mz_max
-                self.state.view_im_min = new_im_min
-                self.state.view_im_max = new_im_max
+                    mz_range = self.state.view_mz_max - self.state.view_mz_min
+                    im_range = self.state.view_im_max - self.state.view_im_min
+
+                    new_mz_min = self.state.view_mz_min + x1_frac * mz_range
+                    new_mz_max = self.state.view_mz_min + x2_frac * mz_range
+                    new_im_max = self.state.view_im_max - y1_frac * im_range
+                    new_im_min = self.state.view_im_max - y2_frac * im_range
+
+                    self.state.view_mz_min = new_mz_min
+                    self.state.view_mz_max = new_mz_max
+                    self.state.view_im_min = new_im_min
+                    self.state.view_im_max = new_im_max
 
                 if self.im_image_element:
                     self.im_image_element.content = ""
@@ -293,14 +331,30 @@ class IMPeakMapPanel(BasePanel):
                 if self._drag_state["dragging"] and self.im_image_element:
                     start_x = self._drag_state["start_x"]
                     start_y = self._drag_state["start_y"]
-                    rect_x = min(start_x, offset_x)
-                    rect_y = min(start_y, offset_y)
-                    rect_w = abs(offset_x - start_x)
-                    rect_h = abs(offset_y - start_y)
-                    self.im_image_element.content = (
-                        f'<rect x="{rect_x}" y="{rect_y}" width="{rect_w}" height="{rect_h}" '
-                        f'fill="rgba(255,255,0,0.15)" stroke="rgba(255,255,0,0.5)" stroke-width="1"/>'
-                    )
+                    in_mobilogram = self._drag_state["in_mobilogram"]
+
+                    if in_mobilogram:
+                        # Mobilogram: full-width selection rectangle (only Y varies)
+                        mob_left, mob_right, mob_top, mob_bottom = self._get_mobilogram_bounds()
+                        rect_x = mob_left
+                        rect_y = min(start_y, offset_y)
+                        rect_w = mob_right - mob_left
+                        rect_h = abs(offset_y - start_y)
+                        # Cyan color for mobilogram selection
+                        self.im_image_element.content = (
+                            f'<rect x="{rect_x}" y="{rect_y}" width="{rect_w}" height="{rect_h}" '
+                            f'fill="rgba(0,200,255,0.2)" stroke="rgba(0,200,255,0.7)" stroke-width="1"/>'
+                        )
+                    else:
+                        # Main plot: normal rectangle
+                        rect_x = min(start_x, offset_x)
+                        rect_y = min(start_y, offset_y)
+                        rect_w = abs(offset_x - start_x)
+                        rect_h = abs(offset_y - start_y)
+                        self.im_image_element.content = (
+                            f'<rect x="{rect_x}" y="{rect_y}" width="{rect_w}" height="{rect_h}" '
+                            f'fill="rgba(255,255,0,0.15)" stroke="rgba(255,255,0,0.5)" stroke-width="1"/>'
+                        )
 
         except Exception:
             pass
@@ -312,6 +366,29 @@ class IMPeakMapPanel(BasePanel):
             offset_y = e.args.get("offsetY", 0)
             delta_y = e.args.get("deltaY", 0)
 
+            # Check if in mobilogram area
+            if self._is_in_mobilogram(offset_x, offset_y):
+                # Mobilogram: only zoom IM axis (Y)
+                mob_left, mob_right, mob_top, mob_bottom = self._get_mobilogram_bounds()
+                y_frac = (offset_y - mob_top) / self.state.plot_height
+                zoom_in = delta_y < 0
+
+                factor = 0.8 if zoom_in else 1.25
+                im_range = self.state.view_im_max - self.state.view_im_min
+                cursor_im = self.state.view_im_max - y_frac * im_range
+
+                new_im_range = im_range * factor
+                self.state.view_im_min = cursor_im - (1 - y_frac) * new_im_range
+                self.state.view_im_max = cursor_im + y_frac * new_im_range
+
+                # Clamp to data bounds
+                self.state.view_im_min = max(self.state.im_min, self.state.view_im_min)
+                self.state.view_im_max = min(self.state.im_max, self.state.view_im_max)
+
+                self.update()
+                return
+
+            # Check if in main plot area
             x_in_plot = self.state.margin_left <= offset_x <= self.state.margin_left + self.state.plot_width
             y_in_plot = self.state.margin_top <= offset_y <= self.state.margin_top + self.state.plot_height
 
