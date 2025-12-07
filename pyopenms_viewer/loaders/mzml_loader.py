@@ -10,12 +10,16 @@ Two-phase loading:
 
 from pathlib import Path
 from typing import Optional, Callable
+import re
 import numpy as np
 import pandas as pd
 
 from pyopenms import MSExperiment, MzMLFile
 
 from pyopenms_viewer.core.state import ViewerState
+
+# Regex to extract CV from filter string (e.g., "cv=-45.00" or "cv=0.00")
+_CV_FILTER_PATTERN = re.compile(r'\bcv=(-?\d+(?:\.\d+)?)\b', re.IGNORECASE)
 
 
 def get_cv_from_spectrum(spec) -> Optional[float]:
@@ -50,6 +54,18 @@ def get_cv_from_spectrum(spec) -> Optional[float]:
                         return float(a.getMetaValue(name))
     except Exception:
         pass
+
+    # Parse CV from filter string (Thermo format: "cv=-45.00")
+    if spec.metaValueExists("filter string"):
+        try:
+            filter_str = spec.getMetaValue("filter string")
+            if isinstance(filter_str, bytes):
+                filter_str = filter_str.decode()
+            match = _CV_FILTER_PATTERN.search(filter_str)
+            if match:
+                return float(match.group(1))
+        except Exception:
+            pass
 
     return None
 
