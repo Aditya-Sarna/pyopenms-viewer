@@ -707,41 +707,57 @@ class SpectrumPanel(BasePanel):
         """Add m/z labels to interesting peaks if enabled.
 
         Uses scipy.signal.find_peaks to find prominent peaks and labels them
-        with their m/z values.
+        with their m/z values. Only considers peaks in the visible range.
 
         Args:
             fig: Plotly figure to modify
             spectrum_idx: Current spectrum index
             mz_array: Array of m/z values
             int_array: Array of intensity values
-            max_int: Maximum intensity for scaling
+            max_int: Maximum intensity for scaling (from full spectrum)
         """
         if not self.state.show_mz_labels or len(mz_array) == 0:
             return
 
         from scipy.signal import find_peaks
 
+        # Filter to visible range if zoomed
+        if self.state.spectrum_zoom_range is not None:
+            xmin, xmax = self.state.spectrum_zoom_range
+            visible_mask = (mz_array >= xmin) & (mz_array <= xmax)
+            mz_visible = mz_array[visible_mask]
+            int_visible = int_array[visible_mask]
+        else:
+            mz_visible = mz_array
+            int_visible = int_array
+
+        if len(mz_visible) == 0:
+            return
+
+        # Use visible max for prominence calculation (find interesting peaks in current view)
+        visible_max = float(int_visible.max()) if len(int_visible) > 0 else max_int
+
         # Get m/z values that already have custom annotations
         custom_annotations = self.state.peak_annotations.get(spectrum_idx, [])
         annotated_mz = {ann["mz"] for ann in custom_annotations}
 
-        # Use scipy.signal.find_peaks to find interesting peaks
-        min_prominence = max_int * 0.05  # 5% of max intensity
+        # Use scipy.signal.find_peaks to find interesting peaks in visible range
+        min_prominence = visible_max * 0.05  # 5% of visible max intensity
         peak_indices, properties = find_peaks(
-            int_array,
+            int_visible,
             prominence=min_prominence,
-            distance=max(1, len(mz_array) // 50),  # At least 2% spacing
+            distance=max(1, len(mz_visible) // 50),  # At least 2% spacing
         )
 
         # If find_peaks returns too many or too few, fall back to top N by prominence
         if len(peak_indices) > 15:
             # Sort by prominence and keep top 15
-            prominences = properties.get("prominences", int_array[peak_indices])
+            prominences = properties.get("prominences", int_visible[peak_indices])
             sorted_idx = np.argsort(prominences)[-15:]
             peak_indices = peak_indices[sorted_idx]
         elif len(peak_indices) == 0:
-            # Fallback: just use top 10 by intensity
-            peak_indices = np.argsort(int_array)[-10:]
+            # Fallback: just use top 10 by intensity in visible range
+            peak_indices = np.argsort(int_visible)[-10:]
 
         # Calculate y values based on display mode
         if self.state.spectrum_intensity_percent:
@@ -750,12 +766,12 @@ class SpectrumPanel(BasePanel):
             scale = 1.0
 
         for idx in peak_indices:
-            mz = float(mz_array[idx])
+            mz = float(mz_visible[idx])
             # Skip if this peak already has a custom annotation
             if any(abs(mz - ann_mz) < 0.01 for ann_mz in annotated_mz):
                 continue
 
-            intensity = float(int_array[idx])
+            intensity = float(int_visible[idx])
             y_val = intensity * scale
 
             fig.add_annotation(
@@ -1207,8 +1223,8 @@ class SpectrumPanel(BasePanel):
             xmax = e.args.get("xaxis.range[1]")
             if xmin is not None and xmax is not None:
                 self.state.spectrum_zoom_range = (xmin, xmax)
-                # Re-render to apply auto-scale or re-downsample for visible range
-                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling) and self.state.selected_spectrum_idx is not None:
+                # Re-render to apply auto-scale, re-downsample, or update m/z labels for visible range
+                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling or self.state.show_mz_labels) and self.state.selected_spectrum_idx is not None:
                     self.show_spectrum(self.state.selected_spectrum_idx)
                 # Sync m/z range to IM peakmap if linking is enabled
                 if self.state.link_spectrum_mz_to_im and self.state.has_ion_mobility:
@@ -1217,8 +1233,8 @@ class SpectrumPanel(BasePanel):
                     self.state.emit_view_changed()
             elif e.args.get("xaxis.autorange"):
                 self.state.spectrum_zoom_range = None
-                # Re-render to reset y-axis or re-downsample full spectrum
-                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling) and self.state.selected_spectrum_idx is not None:
+                # Re-render to reset y-axis, re-downsample full spectrum, or update m/z labels
+                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling or self.state.show_mz_labels) and self.state.selected_spectrum_idx is not None:
                     self.show_spectrum(self.state.selected_spectrum_idx)
                 # Reset IM m/z range if linking is enabled
                 if self.state.link_spectrum_mz_to_im and self.state.has_ion_mobility:
