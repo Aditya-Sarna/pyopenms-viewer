@@ -581,6 +581,84 @@ def create_annotated_spectrum_plot(
     return fig
 
 
+def _draw_matched_ions(
+    fig: go.Figure,
+    ions: list[MatchedIon],
+    intensities: list[float],
+    color: str,
+    legend_name: str,
+    flip: bool = False,
+    show_in_legend: bool = True,
+    is_theoretical: bool = False,
+    show_labels: bool = True,
+) -> None:
+    """Draw matched ion stems, markers, and labels.
+
+    Args:
+        fig: Plotly figure to add traces to
+        ions: List of matched ions to draw
+        intensities: Intensity values (0-100 scale) to use for each ion
+        color: Color for stems, markers, and labels
+        legend_name: Name for the legend entry
+        flip: If True, draw downward (negative y). If False, draw upward.
+        show_in_legend: Whether to show this trace in the legend
+        is_theoretical: If True, show theoretical info in hover template
+        show_labels: If True, show text labels for ion names
+    """
+    if not ions or not intensities:
+        return
+
+    sign = -1 if flip else 1
+    text_offset = -3 if flip else 3
+    text_angle = 45 if flip else -45
+
+    # Build stems
+    x_stems: list[float | None] = []
+    y_stems: list[float | None] = []
+    for ion, intensity in zip(ions, intensities):
+        x_stems.extend([ion.exp_mz, ion.exp_mz, None])
+        y_stems.extend([0, sign * intensity, None])
+
+    fig.add_trace(
+        go.Scatter(
+            x=x_stems,
+            y=y_stems,
+            mode="lines",
+            line={"color": color, "width": 2},
+            name=legend_name,
+            showlegend=show_in_legend,
+            hoverinfo="skip",
+        )
+    )
+
+    # Add markers and labels
+    for ion, intensity in zip(ions, intensities):
+        y_val = sign * intensity
+        if is_theoretical:
+            hover = f"{ion.ion_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {intensity:.1f}%<extra></extra>"
+        else:
+            hover = f"{ion.ion_name}<br>m/z: {ion.exp_mz:.4f} (Δ{ion.mz_error:.4f})<br>Intensity: {ion.exp_intensity_pct:.1f}%<extra></extra>"
+        fig.add_trace(
+            go.Scatter(
+                x=[ion.exp_mz],
+                y=[y_val],
+                mode="markers",
+                marker={"color": color, "size": 4},
+                showlegend=False,
+                hovertemplate=hover,
+            )
+        )
+        if show_labels:
+            fig.add_annotation(
+                x=ion.exp_mz,
+                y=y_val + text_offset,
+                text=ion.ion_name,
+                showarrow=False,
+                font={"size": 9, "color": color},
+                textangle=text_angle,
+            )
+
+
 def _add_annotations_from_data(
     fig: go.Figure,
     annotation_data: SpectrumAnnotationData,
@@ -595,18 +673,20 @@ def _add_annotations_from_data(
             matched_by_type[ion.ion_type] = []
         matched_by_type[ion.ion_type].append(ion)
 
-    # Add unmatched theoretical ions in mirror mode
-    if mirror_mode and show_unmatched and annotation_data.unmatched_ions:
-        # Normalize theoretical intensities for display
-        max_theo_int = max(ion.theo_intensity for ion in annotation_data.unmatched_ions)
-        if max_theo_int <= 0:
-            max_theo_int = 1.0
+    # Compute max theoretical intensity across ALL ions (matched + unmatched) for normalization
+    all_theo_intensities = [ion.theo_intensity for ion in annotation_data.matched_ions]
+    all_theo_intensities += [ion.theo_intensity for ion in annotation_data.unmatched_ions]
+    max_theo_int = max(all_theo_intensities) if all_theo_intensities else 1.0
+    if max_theo_int <= 0:
+        max_theo_int = 1.0
 
-        x_unmatched = []
-        y_unmatched = []
+    # Add unmatched theoretical ions in mirror mode (downward only)
+    if mirror_mode and show_unmatched and annotation_data.unmatched_ions:
+        x_unmatched: list[float | None] = []
+        y_unmatched: list[float | None] = []
         for ion in annotation_data.unmatched_ions:
-            # Normalize to 90% scale
-            display_int = (ion.theo_intensity / max_theo_int) * 90
+            # Normalize to 100% scale using global max
+            display_int = (ion.theo_intensity / max_theo_int) * 100
             x_unmatched.extend([ion.theo_mz, ion.theo_mz, None])
             y_unmatched.extend([0, -display_int, None])
 
@@ -624,7 +704,7 @@ def _add_annotations_from_data(
 
         # Add hover points and annotations for unmatched ions
         for ion in annotation_data.unmatched_ions:
-            display_int = (ion.theo_intensity / max_theo_int) * 90
+            display_int = (ion.theo_intensity / max_theo_int) * 100
             fig.add_trace(
                 go.Scatter(
                     x=[ion.theo_mz],
@@ -632,7 +712,7 @@ def _add_annotations_from_data(
                     mode="markers",
                     marker={"color": "gray", "size": 4, "opacity": 0.5},
                     showlegend=False,
-                    hovertemplate=f"{ion.ion_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {ion.theo_intensity:.1f}<extra></extra>",
+                    hovertemplate=f"{ion.ion_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {display_int:.1f}%<extra></extra>",
                 )
             )
 
@@ -649,59 +729,31 @@ def _add_annotations_from_data(
 
     # Add matched peaks as colored lines grouped by ion type
     for ion_type, ions in matched_by_type.items():
-        if not ions:
-            continue
         color = ION_COLORS.get(ion_type, ION_COLORS["unknown"])
 
-        # Create stem plot for this ion type
-        x_ions = []
-        y_ions = []
-        for ion in ions:
-            x_ions.extend([ion.exp_mz, ion.exp_mz, None])
-            if mirror_mode:
-                y_ions.extend([0, -ion.exp_intensity_pct, None])
-            else:
-                y_ions.extend([0, ion.exp_intensity_pct, None])
+        # Compute experimental intensities (always used for top half / non-mirror)
+        exp_intensities = [ion.exp_intensity_pct for ion in ions]
 
-        fig.add_trace(
-            go.Scatter(
-                x=x_ions,
-                y=y_ions,
-                mode="lines",
-                line={"color": color, "width": 2},
-                name=f"{ion_type}-ions",
-                hoverinfo="skip",
+        if mirror_mode:
+            # Compute theoretical intensities normalized to 0-100% scale
+            theo_intensities = [(ion.theo_intensity / max_theo_int) * 100 for ion in ions]
+
+            # Mirror mode: draw matched peaks both upward (experimental) and downward (theoretical)
+            # Top half: experimental intensities with labels (what we measured)
+            _draw_matched_ions(
+                fig, ions, exp_intensities, color, f"{ion_type}-ions",
+                flip=False, show_in_legend=True, is_theoretical=False, show_labels=True
             )
-        )
-
-        # Add hover points and annotations
-        for ion in ions:
-            y_val = -ion.exp_intensity_pct if mirror_mode else ion.exp_intensity_pct
-            fig.add_trace(
-                go.Scatter(
-                    x=[ion.exp_mz],
-                    y=[y_val],
-                    mode="markers",
-                    marker={"color": color, "size": 4},
-                    showlegend=False,
-                    hovertemplate=f"{ion.ion_name}<br>m/z: {ion.exp_mz:.4f} (Δ{ion.mz_error:.4f})<br>Intensity: {ion.exp_intensity_pct:.1f}%<extra></extra>",
-                )
+            # Bottom half: theoretical intensities without labels (what was predicted)
+            _draw_matched_ions(
+                fig, ions, theo_intensities, color, f"{ion_type}-ions",
+                flip=True, show_in_legend=False, is_theoretical=True, show_labels=False
             )
-
-            # Add text annotation
-            if mirror_mode:
-                text_y = y_val - 3
-                text_angle = 45
-            else:
-                text_y = ion.exp_intensity_pct + 3
-                text_angle = -45
-            fig.add_annotation(
-                x=ion.exp_mz,
-                y=text_y,
-                text=ion.ion_name,
-                showarrow=False,
-                font={"size": 9, "color": color},
-                textangle=text_angle,
+        else:
+            # Non-mirror: draw upward with experimental intensities only
+            _draw_matched_ions(
+                fig, ions, exp_intensities, color, f"{ion_type}-ions",
+                flip=False, show_in_legend=True, is_theoretical=False, show_labels=True
             )
 
 
