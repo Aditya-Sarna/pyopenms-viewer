@@ -125,6 +125,7 @@ class ViewerState:
         self.im_type: Optional[str] = None  # "ion mobility", "inverse reduced ion mobility", etc.
         self.im_unit: str = ""
         self.show_faims_view: bool = False
+        self.selected_faims_cv: Optional[float] = None  # Currently selected CV for filtering peak map
 
         # ========== FILE PATHS ==========
         self.current_file: Optional[str] = None
@@ -495,6 +496,7 @@ class ViewerState:
         self.faims_tic = {}
         self.has_faims = False
         self.show_faims_view = False
+        self.selected_faims_cv = None
         self.selected_spectrum_idx = None
         self.zoom_history = []
         self.spectrum_measurements = {}

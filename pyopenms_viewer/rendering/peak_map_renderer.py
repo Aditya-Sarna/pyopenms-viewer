@@ -103,14 +103,20 @@ class PeakMapRenderer:
         view_mz_min = state.view_mz_min if state.view_mz_min is not None else state.mz_min
         view_mz_max = state.view_mz_max if state.view_mz_max is not None else state.mz_max
 
+        # Determine which DataFrame to use (CV-filtered or full)
+        if state.has_faims and state.selected_faims_cv is not None and state.selected_faims_cv in state.faims_data:
+            source_df = state.faims_data[state.selected_faims_cv]
+        else:
+            source_df = state.df
+
         # Filter to current view
         mask = (
-            (state.df["rt"] >= view_rt_min)
-            & (state.df["rt"] <= view_rt_max)
-            & (state.df["mz"] >= view_mz_min)
-            & (state.df["mz"] <= view_mz_max)
+            (source_df["rt"] >= view_rt_min)
+            & (source_df["rt"] <= view_rt_max)
+            & (source_df["mz"] >= view_mz_min)
+            & (source_df["mz"] <= view_mz_max)
         )
-        view_df = state.df[mask]
+        view_df = source_df[mask]
 
         if len(view_df) == 0:
             return ""

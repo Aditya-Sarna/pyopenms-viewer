@@ -4,7 +4,7 @@ This panel displays a table of all spectra with their metadata,
 including identification information when available.
 """
 
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from nicegui import ui
 
@@ -191,15 +191,16 @@ class SpectraTablePanel(BasePanel):
 
     def _build_columns(self) -> list:
         """Build column definitions based on current toggles."""
-        basic_columns = [
+        # Start with basic columns (without CV)
+        cols = [
             {"name": "idx", "label": "#", "field": "idx", "sortable": True, "align": "left"},
             {"name": "rt", "label": "RT (s)", "field": "rt", "sortable": True, "align": "right"},
             {"name": "ms_level", "label": "MS", "field": "ms_level", "sortable": True, "align": "center"},
-            {"name": "precursor_mz", "label": "Prec m/z", "field": "precursor_mz", "sortable": True, "align": "right"},
-            {"name": "precursor_z", "label": "Z", "field": "precursor_z", "sortable": True, "align": "center"},
-            {"name": "sequence", "label": "Sequence", "field": "sequence", "sortable": True, "align": "left"},
-            {"name": "score", "label": "Score", "field": "score", "sortable": True, "align": "right"},
         ]
+
+        # Add CV column only if FAIMS data is present
+        if self.state.has_faims:
+            cols.append({"name": "cv", "label": "CV", "field": "cv", "sortable": True, "align": "right"})
 
         advanced_columns = [
             {"name": "n_peaks", "label": "Peaks", "field": "n_peaks", "sortable": True, "align": "right"},
@@ -208,25 +209,20 @@ class SpectraTablePanel(BasePanel):
             {"name": "mz_range", "label": "m/z Range", "field": "mz_range", "sortable": False, "align": "center"},
         ]
 
-        rank_column = {
-            "name": "hit_rank",
-            "label": "Rank",
-            "field": "hit_rank",
-            "sortable": True,
-            "align": "center",
-        }
-
-        cols = basic_columns[:3]  # idx, rt, ms_level
-
         if self.show_advanced_cb and self.show_advanced_cb.value:
             cols = cols + advanced_columns
 
-        cols = cols + basic_columns[3:5]  # precursor_mz, z
+        # Add precursor columns
+        cols.append({"name": "precursor_mz", "label": "Prec m/z", "field": "precursor_mz", "sortable": True, "align": "right"})
+        cols.append({"name": "precursor_z", "label": "Z", "field": "precursor_z", "sortable": True, "align": "center"})
 
+        # Add rank column if showing all hits
         if self.show_all_hits_cb and self.show_all_hits_cb.value:
-            cols = cols + [rank_column]
+            cols.append({"name": "hit_rank", "label": "Rank", "field": "hit_rank", "sortable": True, "align": "center"})
 
-        cols = cols + basic_columns[5:]  # sequence, score
+        # Add ID columns
+        cols.append({"name": "sequence", "label": "Sequence", "field": "sequence", "sortable": True, "align": "left"})
+        cols.append({"name": "score", "label": "Score", "field": "score", "sortable": True, "align": "right"})
 
         # Add meta value columns if enabled
         if self.show_meta_values_cb and self.show_meta_values_cb.value:
@@ -290,6 +286,9 @@ class SpectraTablePanel(BasePanel):
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
         if data_type in ("mzml", "ids"):
+            # Rebuild columns when mzML loaded (CV column depends on has_faims)
+            if data_type == "mzml" and self.spectrum_table is not None:
+                self.spectrum_table.columns = self._build_columns()
             self.update()
             # Auto-expand when data is loaded
             if data_type == "mzml" and self.expansion and self._has_data():

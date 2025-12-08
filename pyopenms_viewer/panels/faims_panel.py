@@ -131,16 +131,11 @@ class FAIMSPanel:
                     cv_str = ", ".join([f"{cv:.1f}V" for cv in self.state.faims_cvs])
                     self.state.faims_info_label.set_text(f"FAIMS CVs detected: {cv_str}")
                     self.state.faims_info_label.set_visibility(True)
-                # Show FAIMS toggle
-                if hasattr(self.state, "faims_toggle") and self.state.faims_toggle:
-                    self.state.faims_toggle.set_visibility(True)
             else:
                 # Hide FAIMS UI elements if no FAIMS data
                 if hasattr(self.state, "faims_info_label") and self.state.faims_info_label:
                     self.state.faims_info_label.set_visibility(False)
-                if hasattr(self.state, "faims_toggle") and self.state.faims_toggle:
-                    self.state.faims_toggle.set_visibility(False)
-                    self.state.show_faims_view = False
+                self.state.show_faims_view = False
                 if self.card:
                     self.card.set_visibility(False)
 

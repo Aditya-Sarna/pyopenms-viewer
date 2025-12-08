@@ -405,19 +405,7 @@ async def create_ui():
             state.id_info_label = id_info_label
             state.faims_info_label = faims_info_label
 
-            # FAIMS toggle (hidden by default, shown when FAIMS data is detected)
-            def toggle_faims_view():
-                state.show_faims_view = faims_toggle.value
-                if state.faims_container:
-                    state.faims_container.set_visibility(state.show_faims_view)
-                if state.df is not None and state.show_faims_view:
-                    state.update_faims_plots()
-
-            faims_toggle = ui.checkbox("FAIMS", value=False, on_change=toggle_faims_view).props("dense").classes(
-                "text-xs text-purple-400"
-            )
-            faims_toggle.set_visibility(False)
-            state.faims_toggle = faims_toggle
+            # Note: FAIMS toggle moved to peak map panel's minimap area
 
         # Panels container - holds all reorderable expansion panels
         panels_container = ui.column().classes("w-full items-center gap-2")

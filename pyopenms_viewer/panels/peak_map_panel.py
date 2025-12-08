@@ -5,15 +5,15 @@ with interactive mouse controls for zoom, pan, and measurement.
 """
 
 import time
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from nicegui import ui
 from nicegui.events import MouseEventArguments
 
-from pyopenms_viewer.core.state import ViewerState
 from pyopenms_viewer.core.config import COLORMAPS
+from pyopenms_viewer.core.state import ViewerState
 from pyopenms_viewer.panels.base_panel import BasePanel
-from pyopenms_viewer.rendering import PeakMapRenderer, MinimapRenderer
+from pyopenms_viewer.rendering import MinimapRenderer, PeakMapRenderer
 
 
 class PeakMapPanel(BasePanel):
@@ -54,6 +54,12 @@ class PeakMapPanel(BasePanel):
         self.id_seq_cb = None
         self.swap_axes_cb = None
         self.spectrum_marker_cb = None
+
+        # FAIMS UI elements
+        self.faims_checkbox: Optional[ui.checkbox] = None
+        self.faims_container: Optional[ui.column] = None
+        self.faims_cv_minimaps: dict[float, ui.image] = {}
+        self.faims_cv_labels: dict[float, ui.label] = {}
 
         # Renderers
         self.peak_map_renderer = PeakMapRenderer(
@@ -313,6 +319,18 @@ class PeakMapPanel(BasePanel):
                     .tooltip("Toggle 3D peak view")
                 )
 
+            # FAIMS checkbox (hidden until FAIMS data is detected)
+            self.faims_checkbox = (
+                ui.checkbox("FAIMS CV Filter", value=False, on_change=self._toggle_faims_filter)
+                .props("dense")
+                .classes("text-purple-400 mt-2")
+            )
+            self.faims_checkbox.set_visibility(False)
+
+            # Container for per-CV minimaps (hidden until FAIMS filter is enabled)
+            self.faims_container = ui.column().classes("mt-1 gap-1")
+            self.faims_container.set_visibility(False)
+
     def update(self) -> None:
         """Update the peak map display."""
         if self.state.df is None or self.image_element is None:
@@ -360,6 +378,11 @@ class PeakMapPanel(BasePanel):
             # Auto-expand panel when data loaded
             if self.expansion:
                 self.expansion.value = True
+            # Show/hide FAIMS checkbox based on data
+            if self.faims_checkbox:
+                self.faims_checkbox.set_visibility(self.state.has_faims)
+                if self.state.has_faims:
+                    self._create_faims_cv_minimaps()
 
     def _on_view_changed(self):
         """Handle view changed event."""
@@ -424,6 +447,92 @@ class PeakMapPanel(BasePanel):
         self.state.show_spectrum_marker = self.spectrum_marker_cb.value
         if self.state.df is not None:
             self.update()
+
+    # === FAIMS handlers ===
+
+    def _toggle_faims_filter(self):
+        """Toggle FAIMS CV filter mode."""
+        if self.faims_checkbox is None or self.faims_container is None:
+            return
+
+        enabled = self.faims_checkbox.value
+        self.faims_container.set_visibility(enabled)
+
+        if not enabled:
+            # Clear CV filter and show all data
+            self.state.selected_faims_cv = None
+            # Reset all label highlights
+            for _cv, label in self.faims_cv_labels.items():
+                label.classes(remove="bg-purple-800", add="")
+            self.update()
+        else:
+            # Update CV minimaps
+            self._update_faims_cv_minimaps()
+
+    def _create_faims_cv_minimaps(self):
+        """Create minimap images for each FAIMS CV value."""
+        if self.faims_container is None or not self.state.has_faims:
+            return
+
+        self.faims_container.clear()
+        self.faims_cv_minimaps = {}
+        self.faims_cv_labels = {}
+
+        # Calculate minimap size - smaller than main minimap
+        mini_width = self.state.minimap_width
+        mini_height = max(40, self.state.minimap_height // 2)
+
+        with self.faims_container:
+            ui.label("Click a CV to filter:").classes("text-xs text-purple-400")
+            for cv in self.state.faims_cvs:
+                with ui.column().classes("gap-0"):
+                    # CV label (clickable)
+                    label = (
+                        ui.label(f"CV: {cv:.1f}V")
+                        .classes("text-xs text-purple-300 cursor-pointer hover:text-purple-100")
+                        .style("padding: 2px 4px;")
+                    )
+                    label.on("click", lambda e, c=cv: self._select_faims_cv(c))
+                    self.faims_cv_labels[cv] = label
+
+                    # Minimap image (also clickable)
+                    img = ui.image().style(
+                        f"width: {mini_width}px; height: {mini_height}px; "
+                        f"background: rgba(30,30,30,0.8); cursor: pointer; "
+                        f"border: 1px solid #666;"
+                    )
+                    img.on("click", lambda e, c=cv: self._select_faims_cv(c))
+                    self.faims_cv_minimaps[cv] = img
+
+    def _update_faims_cv_minimaps(self):
+        """Update the FAIMS CV minimap images."""
+        if not self.state.has_faims or not self.faims_cv_minimaps:
+            return
+
+        for cv in self.state.faims_cvs:
+            if cv in self.faims_cv_minimaps and self.faims_cv_minimaps[cv] is not None:
+                # Render minimap for this CV using the per-CV data
+                img_data = self.minimap_renderer.render_for_cv(self.state, cv)
+                if img_data:
+                    self.faims_cv_minimaps[cv].set_source(f"data:image/png;base64,{img_data}")
+
+    def _select_faims_cv(self, cv: float):
+        """Select a FAIMS CV to filter the peak map."""
+        # Toggle selection - if already selected, deselect
+        if self.state.selected_faims_cv == cv:
+            self.state.selected_faims_cv = None
+        else:
+            self.state.selected_faims_cv = cv
+
+        # Update label highlights
+        for c, label in self.faims_cv_labels.items():
+            if c == self.state.selected_faims_cv:
+                label.classes(remove="", add="bg-purple-800 rounded")
+            else:
+                label.classes(remove="bg-purple-800 rounded", add="")
+
+        # Update the peak map
+        self.update()
 
     # === Mouse handlers ===
 

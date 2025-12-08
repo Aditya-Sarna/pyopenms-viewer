@@ -175,3 +175,59 @@ class MinimapRenderer:
             draw.line([(x - 1, 0), (x - 1, self.height)], fill=color, width=1)
             draw.line([(x + 1, 0), (x + 1, self.height)], fill=color, width=1)
             draw.line([(x + 2, 0), (x + 2, self.height)], fill=(0, 0, 0, 200), width=1)
+
+    def render_for_cv(self, state, cv: float, width: int = None, height: int = None) -> Optional[str]:
+        """Render a minimap for a specific FAIMS CV value.
+
+        Args:
+            state: ViewerState with FAIMS data
+            cv: The compensation voltage value to render
+            width: Optional custom width (uses self.width if not specified)
+            height: Optional custom height (uses half of self.height if not specified)
+
+        Returns:
+            Base64-encoded PNG string, or None if no data for this CV
+        """
+        if not state.has_faims or cv not in state.faims_data:
+            return None
+
+        cv_df = state.faims_data.get(cv)
+        if cv_df is None or len(cv_df) == 0:
+            return None
+
+        # Use smaller dimensions for CV minimaps
+        render_width = width or self.width
+        render_height = height or max(40, self.height // 2)
+
+        # Create minimap canvas - swap axes to match main view
+        if state.swap_axes:
+            # m/z on x-axis, RT on y-axis
+            cvs = ds.Canvas(
+                plot_width=render_width,
+                plot_height=render_height,
+                x_range=(state.mz_min, state.mz_max),
+                y_range=(state.rt_min, state.rt_max),
+            )
+            agg = cvs.points(cv_df, "mz", "rt", agg=ds.max("log_intensity"))
+        else:
+            # RT on x-axis, m/z on y-axis (traditional)
+            cvs = ds.Canvas(
+                plot_width=render_width,
+                plot_height=render_height,
+                x_range=(state.rt_min, state.rt_max),
+                y_range=(state.mz_min, state.mz_max),
+            )
+            agg = cvs.points(cv_df, "rt", "mz", agg=ds.max("log_intensity"))
+
+        # Apply color map with linear scaling
+        img = tf.shade(agg, cmap=COLORMAPS[state.colormap], how="linear")
+        img = tf.dynspread(img, threshold=0.5, max_px=2)
+        img = tf.set_background(img, get_colormap_background(state.colormap))
+
+        # Convert to PIL
+        plot_img = img.to_pil()
+
+        # Convert to base64
+        buffer = io.BytesIO()
+        plot_img.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")

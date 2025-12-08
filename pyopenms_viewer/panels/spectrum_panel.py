@@ -17,6 +17,7 @@ from pyopenms_viewer.annotation.spectrum_annotator import (
     get_external_peak_annotations_from_hit,
 )
 from pyopenms_viewer.core.state import ViewerState
+from pyopenms_viewer.loaders.mzml_loader import get_cv_from_spectrum
 from pyopenms_viewer.panels.base_panel import BasePanel
 
 
@@ -362,6 +363,7 @@ class SpectrumPanel(BasePanel):
         """
         rt = spec.getRT()
         ms_level = spec.getMSLevel()
+        cv = get_cv_from_spectrum(spec)
         total_peaks = len(mz_array)
         max_int = float(int_array.max()) if total_peaks > 0 else 1.0
 
@@ -457,6 +459,10 @@ class SpectrumPanel(BasePanel):
                 )
                 title += f" | Precursor: {prec_mz:.4f}"
 
+        # Add CV if available
+        if cv is not None:
+            title += f" | CV={cv:.1f}V"
+
         # Layout
         fig.update_layout(
             title={"text": title, "font": {"size": 14, "color": "#888"}},
@@ -531,6 +537,7 @@ class SpectrumPanel(BasePanel):
             Plotly Figure object with ion annotations
         """
         rt = spec.getRT()
+        cv = get_cv_from_spectrum(spec)
         pep_id = self.state.peptide_ids[id_idx]
         hits = pep_id.getHits()
 
@@ -582,8 +589,10 @@ class SpectrumPanel(BasePanel):
             annotation_data=annotation_data,
         )
 
-        # Update title to include spectrum index
+        # Update title to include spectrum index and CV if available
         title = f"Spectrum #{spectrum_idx} | {sequence_str} (z={charge}+) | RT={rt:.2f}s"
+        if cv is not None:
+            title += f" | CV={cv:.1f}V"
         fig.update_layout(
             title={"text": title, "font": {"size": 14}},
             height=350,

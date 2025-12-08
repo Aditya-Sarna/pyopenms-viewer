@@ -1,8 +1,11 @@
 """Spectrum metadata extraction from mzML experiments."""
 
 from typing import Any
+
 import numpy as np
+
 from pyopenms_viewer.core.state import ViewerState
+from pyopenms_viewer.loaders.mzml_loader import get_cv_from_spectrum
 
 
 def extract_spectrum_data(state: ViewerState) -> list[dict[str, Any]]:
@@ -46,10 +49,14 @@ def extract_spectrum_data(state: ViewerState) -> list[dict[str, Any]]:
                 charge = precursors[0].getCharge()
                 precursor_charge = charge if charge > 0 else "-"
 
+        # Get FAIMS CV if available (stored as float, None if not available)
+        cv = get_cv_from_spectrum(spec)
+
         data.append({
             "idx": idx,
             "rt": round(rt, 2),
             "ms_level": ms_level,
+            "cv": cv,
             "n_peaks": n_peaks,
             "tic": f"{tic:.2e}",
             "bpi": f"{bpi:.2e}",
