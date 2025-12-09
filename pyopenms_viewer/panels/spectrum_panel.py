@@ -503,7 +503,9 @@ class SpectrumPanel(BasePanel):
                 range=list(self.state.spectrum_zoom_range),
                 showgrid=False,
                 linecolor="#888",
-                tickcolor="#888"
+                tickcolor="#888",
+                ticks="outside",
+                ticklen=5,
             )
             # Auto-scale y-axis to visible peaks if enabled (use full array for accuracy)
             if self.state.spectrum_auto_scale:
@@ -517,14 +519,16 @@ class SpectrumPanel(BasePanel):
                         visible_max = float(int_array[visible_mask].max())
                     y_range = [0, visible_max / 0.95]
         else:
-            fig.update_xaxes(showgrid=False, linecolor="#888", tickcolor="#888")
+            fig.update_xaxes(showgrid=False, linecolor="#888", tickcolor="#888", ticks="outside", ticklen=5)
 
         fig.update_yaxes(
             range=y_range,
             showgrid=False,
             fixedrange=True,
             linecolor="#888",
-            tickcolor="#888"
+            tickcolor="#888",
+            ticks="outside",
+            ticklen=5,
         )
 
         # Add measurements, annotations, m/z labels, and hover highlights
