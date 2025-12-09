@@ -610,7 +610,7 @@ def _draw_matched_ions(
 
     sign = -1 if flip else 1
     text_offset = -3 if flip else 3
-    text_angle = 45 if flip else -45
+    text_angle = 0
 
     # Build stems
     x_stems: list[float | None] = []
@@ -723,7 +723,7 @@ def _add_annotations_from_data(
                 text=ion.ion_name,
                 showarrow=False,
                 font={"size": 8, "color": "gray"},
-                textangle=45,
+                textangle=0,
                 opacity=0.6,
             )
 
