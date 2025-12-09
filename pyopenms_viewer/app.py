@@ -14,7 +14,6 @@ from pyopenms_viewer.core.state import ViewerState
 from pyopenms_viewer.loaders import FeatureLoader, IDLoader, MzMLLoader
 from pyopenms_viewer.panels import (
     ChromatogramPanel,
-    CustomRangePanel,
     FAIMSPanel,
     FeaturesTablePanel,
     IMPeakMapPanel,
@@ -415,20 +414,23 @@ async def create_ui():
         panel_manager = PanelManager(state, panels_container)
 
         # Create and register all panels
+        peak_map_panel = PeakMapPanel(state)
         panels = [
             TICPanel(state),
             ChromatogramPanel(state),
-            PeakMapPanel(state),
+            peak_map_panel,
             IMPeakMapPanel(state),
             SpectrumPanel(state),
             SpectraTablePanel(state),
             FeaturesTablePanel(state),
-            CustomRangePanel(state),
         ]
 
         for panel in panels:
             panel.build(panels_container)
             panel_manager.register(panel)
+
+        # Store peak_map_panel reference for keyboard shortcut
+        state.peak_map_panel = peak_map_panel
 
         # FAIMS panel (not managed by PanelManager since it's a card, not expansion)
         faims_panel = FAIMSPanel(state)
@@ -448,6 +450,7 @@ async def create_ui():
 | `-` | Zoom out |
 | `Left` `Right` | Pan left/right (RT) |
 | `Up` `Down` | Pan up/down (m/z) |
+| `G` | Go to exact range |
 | `Home` | Reset to full view |
 | `Delete` | Delete selected measurement |
 | `F11` | Toggle fullscreen |
@@ -575,6 +578,10 @@ async def create_ui():
                 # Delete selected measurement in spectrum browser
                 if hasattr(state, 'spectrum_selected_measurement_idx') and state.spectrum_selected_measurement_idx is not None:
                     state.delete_selected_measurement()
+            elif e.key.lower() == "g":
+                # Open go-to range dialog
+                if hasattr(state, 'peak_map_panel') and state.peak_map_panel:
+                    state.peak_map_panel._open_range_popover()
 
         ui.keyboard(on_key=on_global_key)
 

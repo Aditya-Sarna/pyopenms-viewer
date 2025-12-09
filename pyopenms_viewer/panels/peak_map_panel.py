@@ -207,12 +207,115 @@ class PeakMapPanel(BasePanel):
         with ui.row().classes("w-full items-center justify-between mb-1"):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("navigation", size="xs").classes("text-gray-400")
-                self.breadcrumb_label = ui.label("Full view").classes("text-xs text-gray-400")
+                self.breadcrumb_label = ui.label("Full view").classes(
+                    "text-xs text-gray-400 cursor-pointer hover:text-cyan-400"
+                )
+                self.breadcrumb_label.on("click", self._open_range_popover)
+                ui.tooltip("Click to set exact range (or press G)")
+
+                # Range popover (hidden by default)
+                self._build_range_popover()
+
             self.coord_label = ui.label("RT: --  m/z: --").classes("text-xs text-cyan-400 font-mono")
 
         # Store reference in state for other components
         self.state.coord_label = self.coord_label
         self.state.breadcrumb_label = self.breadcrumb_label
+
+    def _build_range_popover(self):
+        """Build the compact range input popover."""
+        self.range_dialog = ui.dialog().props("persistent")
+        with self.range_dialog:
+            with ui.card().classes("p-4"):
+                ui.label("Go to Range").classes("text-sm font-bold mb-2")
+                with ui.row().classes("gap-2 items-end"):
+                    ui.label("RT:").classes("text-xs text-gray-400")
+                    self.range_rt_min = ui.number(format="%.1f").props(
+                        "dense outlined"
+                    ).classes("w-24").style("font-size: 12px;")
+                    ui.label("–").classes("text-gray-400")
+                    self.range_rt_max = ui.number(format="%.1f").props(
+                        "dense outlined"
+                    ).classes("w-24").style("font-size: 12px;")
+                    self.range_rt_unit_label = ui.label("s").classes("text-xs text-gray-400")
+
+                with ui.row().classes("gap-2 items-end mt-2"):
+                    ui.label("m/z:").classes("text-xs text-gray-400")
+                    self.range_mz_min = ui.number(format="%.2f").props(
+                        "dense outlined"
+                    ).classes("w-24").style("font-size: 12px;")
+                    ui.label("–").classes("text-gray-400")
+                    self.range_mz_max = ui.number(format="%.2f").props(
+                        "dense outlined"
+                    ).classes("w-24").style("font-size: 12px;")
+
+                with ui.row().classes("gap-2 mt-3 justify-end"):
+                    ui.button("Reset", on_click=self._reset_range_from_dialog).props(
+                        "flat dense color=grey"
+                    )
+                    ui.button("Cancel", on_click=self.range_dialog.close).props(
+                        "flat dense"
+                    )
+                    ui.button("Apply", on_click=self._apply_range_from_dialog).props(
+                        "dense color=primary"
+                    )
+
+    def _open_range_popover(self):
+        """Open the range input popover and populate with current values."""
+        if self.state.df is None:
+            ui.notify("No data loaded", type="warning")
+            return
+
+        # Populate with current view values
+        if self.state.rt_in_minutes:
+            self.range_rt_min.value = self.state.view_rt_min / 60
+            self.range_rt_max.value = self.state.view_rt_max / 60
+            self.range_rt_unit_label.set_text("min")
+        else:
+            self.range_rt_min.value = self.state.view_rt_min
+            self.range_rt_max.value = self.state.view_rt_max
+            self.range_rt_unit_label.set_text("s")
+
+        self.range_mz_min.value = self.state.view_mz_min
+        self.range_mz_max.value = self.state.view_mz_max
+
+        self.range_dialog.open()
+
+    def _apply_range_from_dialog(self):
+        """Apply the range from the dialog inputs."""
+        rt_min = self.range_rt_min.value
+        rt_max = self.range_rt_max.value
+        mz_min = self.range_mz_min.value
+        mz_max = self.range_mz_max.value
+
+        # Convert from minutes if needed
+        if self.state.rt_in_minutes:
+            rt_min = rt_min * 60
+            rt_max = rt_max * 60
+
+        # Validate ranges
+        if rt_min >= rt_max:
+            ui.notify("RT Min must be less than RT Max", type="warning")
+            return
+        if mz_min >= mz_max:
+            ui.notify("m/z Min must be less than m/z Max", type="warning")
+            return
+
+        # Clamp to data bounds
+        self.state.view_rt_min = max(self.state.rt_min, rt_min)
+        self.state.view_rt_max = min(self.state.rt_max, rt_max)
+        self.state.view_mz_min = max(self.state.mz_min, mz_min)
+        self.state.view_mz_max = min(self.state.mz_max, mz_max)
+
+        self.state.emit_view_changed()
+        self.range_dialog.close()
+        ui.notify("Range applied", type="positive")
+
+    def _reset_range_from_dialog(self):
+        """Reset to full data range from dialog."""
+        self.state.reset_view()
+        self.range_dialog.close()
+        ui.notify("Reset to full range", type="info")
 
     def _build_help_text(self):
         """Build the help text."""
