@@ -379,6 +379,57 @@ def parse_fragment_annotation_string(
     return annotations
 
 
+def format_ion_label_with_superscript(ion_name: str) -> str:
+    """Format ion name with charge as superscript.
+
+    Converts charge notation to numeric superscript format:
+    - "y5+" -> "y5<sup>1+</sup>"
+    - "y5+2" -> "y5<sup>2+</sup>"
+    - "y5++" -> "y5<sup>2+</sup>"
+    - "b3-" -> "b3<sup>1-</sup>"
+    - "b3-2" -> "b3<sup>2-</sup>"
+    - "b3--" -> "b3<sup>2-</sup>"
+
+    Args:
+        ion_name: Ion name string (e.g., "b3", "y5+2", "y5++")
+
+    Returns:
+        Ion name with charge formatted as superscript HTML
+    """
+    if not ion_name:
+        return ion_name
+
+    # Pattern 1: Repeated + or - at the end (e.g., "y5++", "b3---")
+    # Count consecutive + or - at end
+    match_repeated_plus = re.search(r"\++$", ion_name)
+    if match_repeated_plus:
+        charge_count = len(match_repeated_plus.group())
+        base_name = ion_name[: match_repeated_plus.start()]
+        return f"{base_name}<sup>{charge_count}+</sup>"
+
+    match_repeated_minus = re.search(r"-+$", ion_name)
+    if match_repeated_minus:
+        charge_count = len(match_repeated_minus.group())
+        base_name = ion_name[: match_repeated_minus.start()]
+        return f"{base_name}<sup>{charge_count}-</sup>"
+
+    # Pattern 2: Number after + or - (e.g., "y5+2", "b3-2")
+    match_plus_num = re.search(r"\+(\d+)$", ion_name)
+    if match_plus_num:
+        charge_num = match_plus_num.group(1)
+        base_name = ion_name[: match_plus_num.start()]
+        return f"{base_name}<sup>{charge_num}+</sup>"
+
+    match_minus_num = re.search(r"-(\d+)$", ion_name)
+    if match_minus_num:
+        charge_num = match_minus_num.group(1)
+        base_name = ion_name[: match_minus_num.start()]
+        return f"{base_name}<sup>{charge_num}-</sup>"
+
+    # No charge modifier found, return as-is
+    return ion_name
+
+
 def _get_ion_type(ion_name: str) -> str:
     """Determine ion type from ion name.
 
@@ -634,10 +685,11 @@ def _draw_matched_ions(
     # Add markers and labels
     for ion, intensity in zip(ions, intensities):
         y_val = sign * intensity
+        formatted_name = format_ion_label_with_superscript(ion.ion_name)
         if is_theoretical:
-            hover = f"{ion.ion_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {intensity:.1f}%<extra></extra>"
+            hover = f"{formatted_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {intensity:.1f}%<extra></extra>"
         else:
-            hover = f"{ion.ion_name}<br>m/z: {ion.exp_mz:.4f} (Δ{ion.mz_error:.4f})<br>Intensity: {ion.exp_intensity_pct:.1f}%<extra></extra>"
+            hover = f"{formatted_name}<br>m/z: {ion.exp_mz:.4f} (Δ{ion.mz_error:.4f})<br>Intensity: {ion.exp_intensity_pct:.1f}%<extra></extra>"
         fig.add_trace(
             go.Scatter(
                 x=[ion.exp_mz],
@@ -652,7 +704,7 @@ def _draw_matched_ions(
             fig.add_annotation(
                 x=ion.exp_mz,
                 y=y_val + text_offset,
-                text=ion.ion_name,
+                text=format_ion_label_with_superscript(ion.ion_name),
                 showarrow=False,
                 font={"size": 9, "color": color},
                 textangle=text_angle,
@@ -705,6 +757,7 @@ def _add_annotations_from_data(
         # Add hover points and annotations for unmatched ions
         for ion in annotation_data.unmatched_ions:
             display_int = (ion.theo_intensity / max_theo_int) * 100
+            formatted_name = format_ion_label_with_superscript(ion.ion_name)
             fig.add_trace(
                 go.Scatter(
                     x=[ion.theo_mz],
@@ -712,7 +765,7 @@ def _add_annotations_from_data(
                     mode="markers",
                     marker={"color": "gray", "size": 4, "opacity": 0.5},
                     showlegend=False,
-                    hovertemplate=f"{ion.ion_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {display_int:.1f}%<extra></extra>",
+                    hovertemplate=f"{formatted_name} (theoretical)<br>m/z: {ion.theo_mz:.4f}<br>Intensity: {display_int:.1f}%<extra></extra>",
                 )
             )
 
@@ -720,7 +773,7 @@ def _add_annotations_from_data(
             fig.add_annotation(
                 x=ion.theo_mz,
                 y=-display_int - 3,
-                text=ion.ion_name,
+                text=format_ion_label_with_superscript(ion.ion_name),
                 showarrow=False,
                 font={"size": 8, "color": "gray"},
                 textangle=0,
