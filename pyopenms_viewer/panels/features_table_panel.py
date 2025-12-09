@@ -60,6 +60,7 @@ class FeaturesTablePanel(BasePanel):
 
         # Subscribe to events
         self.state.on_data_loaded(self._on_data_loaded)
+        self.state.on_selection_changed(self._on_selection_changed)
 
         self._is_built = True
         return self.expansion
@@ -180,6 +181,25 @@ class FeaturesTablePanel(BasePanel):
             if self._has_data() and self.expansion:
                 self.expansion.value = True
 
+    def _on_selection_changed(self, selection_type: str, index: int | None):
+        """Handle selection changed event from other panels."""
+        if selection_type == "feature" and self.feature_table is not None:
+            # Check if we're already selecting this row to avoid loops
+            current_selection = self.feature_table.selected
+            current_idx = current_selection[0].get("idx") if current_selection else None
+
+            if index != current_idx:
+                if index is not None:
+                    # Find the row in the current table data that matches this index
+                    for row in self.feature_table.rows:
+                        if row.get("idx") == index:
+                            # Select this row in the table
+                            self.feature_table.selected = [row]
+                            break
+                else:
+                    # Clear selection
+                    self.feature_table.selected = []
+
     def _on_table_select(self, e):
         """Handle row selection."""
         if e.selection:
@@ -256,8 +276,8 @@ class FeaturesTablePanel(BasePanel):
             self.state.view_mz_min = max(self.state.mz_min, mz_min)
             self.state.view_mz_max = min(self.state.mz_max, mz_max)
 
-            # Update selected feature
-            self.state.selected_feature_idx = feature_idx
+            # Select the feature (this will emit selection_changed event)
+            self.state.select_feature(feature_idx)
 
             # Emit view changed
             self.state.emit_view_changed()
