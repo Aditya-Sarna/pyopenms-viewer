@@ -380,51 +380,142 @@ def parse_fragment_annotation_string(
 
 
 def format_ion_label_with_superscript(ion_name: str) -> str:
-    """Format ion name with charge as superscript.
+    """Format ion name with index as subscript and charge as superscript.
 
-    Converts charge notation to numeric superscript format:
-    - "y5+" -> "y5<sup>1+</sup>"
-    - "y5+2" -> "y5<sup>2+</sup>"
-    - "y5++" -> "y5<sup>2+</sup>"
-    - "b3-" -> "b3<sup>1-</sup>"
-    - "b3-2" -> "b3<sup>2-</sup>"
-    - "b3--" -> "b3<sup>2-</sup>"
+    For a,b,c,x,y,z ions, formats the numeric index as subscript and charge as superscript:
+    - "y5" -> "y<sub>5</sub>"
+    - "y15+" -> "y<sub>15</sub><sup>+</sup>"
+    - "y5+2" -> "y<sub>5</sub><sup>2+</sup>"
+    - "y5++" -> "y<sub>5</sub><sup>2+</sup>"
+    - "b3-" -> "b<sub>3</sub><sup>-</sup>"
+    - "y7+H2O++" -> "y<sub>7</sub>+H2O<sup>2+</sup>" (neutral loss preserved, only trailing charge)
+
+    For other ion types, only formats charge as superscript.
 
     Args:
-        ion_name: Ion name string (e.g., "b3", "y5+2", "y5++")
+        ion_name: Ion name string (e.g., "b3", "y5+2", "y5++", "y7+H2O++")
 
     Returns:
-        Ion name with charge formatted as superscript HTML
+        Ion name with index as subscript and charge as superscript HTML
     """
     if not ion_name:
         return ion_name
 
-    # Pattern 1: Repeated + or - at the end (e.g., "y5++", "b3---")
-    # Count consecutive + or - at end
+    # First, extract trailing charge from the end of the string
+    # Charge patterns at end: +, ++, +++, -, --, ---, +2, +3, -2, -3
+    trailing_charge = ""
+    base_name = ion_name
+
+    # Check for trailing charge patterns (must be at the very end)
+    charge_match = re.search(r"(\++|\-+|\+\d+|\-\d+)$", ion_name)
+    if charge_match:
+        trailing_charge = charge_match.group(1)
+        base_name = ion_name[: charge_match.start()]
+
+    # Now parse the base name for a,b,c,x,y,z ion pattern: letter + digits + optional modifier
+    match = re.match(r"^([abcxyzABCXYZ])(\d+)(.*)$", base_name)
+    if match:
+        ion_type = match.group(1)
+        index = match.group(2)
+        modifier = match.group(3)  # e.g., "", "+H2O", "-NH3", "-H2O"
+
+        # Format index as subscript
+        result = f"{ion_type}<sub>{index}</sub>"
+
+        # Add modifier (neutral loss) as-is
+        if modifier:
+            result += modifier
+
+        # Format charge as superscript if present
+        if trailing_charge:
+            charge_str = _parse_charge_string(trailing_charge)
+            if charge_str:
+                result += f"<sup>{charge_str}</sup>"
+
+        return result
+
+    # For non-standard ion names, just handle charge modifier at the end (fallback)
+    return _format_charge_only(ion_name)
+
+
+def _parse_charge_string(charge_part: str) -> str:
+    """Parse charge string and return formatted charge (e.g., "+", "2+", "-", "2-").
+
+    Args:
+        charge_part: The charge portion of ion name (e.g., "+", "+2", "++", "-", "-2", "--")
+
+    Returns:
+        Formatted charge string for superscript display
+    """
+    if not charge_part:
+        return ""
+
+    # Pattern 1: Repeated + (e.g., "+", "++", "+++")
+    match_repeated_plus = re.match(r"^\++$", charge_part)
+    if match_repeated_plus:
+        charge_count = len(charge_part)
+        return "+" if charge_count == 1 else f"{charge_count}+"
+
+    # Pattern 2: Repeated - (e.g., "-", "--", "---")
+    match_repeated_minus = re.match(r"^-+$", charge_part)
+    if match_repeated_minus:
+        charge_count = len(charge_part)
+        return "-" if charge_count == 1 else f"{charge_count}-"
+
+    # Pattern 3: +N (e.g., "+2", "+3")
+    match_plus_num = re.match(r"^\+(\d+)$", charge_part)
+    if match_plus_num:
+        charge_num = int(match_plus_num.group(1))
+        return "+" if charge_num == 1 else f"{charge_num}+"
+
+    # Pattern 4: -N (e.g., "-2", "-3")
+    match_minus_num = re.match(r"^-(\d+)$", charge_part)
+    if match_minus_num:
+        charge_num = int(match_minus_num.group(1))
+        return "-" if charge_num == 1 else f"{charge_num}-"
+
+    # Unknown format, return as-is
+    return charge_part
+
+
+def _format_charge_only(ion_name: str) -> str:
+    """Format only the charge portion of an ion name (fallback for non-standard ions).
+
+    Args:
+        ion_name: Ion name string
+
+    Returns:
+        Ion name with charge formatted as superscript HTML
+    """
+    # Pattern 1: Repeated + or - at the end (e.g., "precursor++")
     match_repeated_plus = re.search(r"\++$", ion_name)
     if match_repeated_plus:
         charge_count = len(match_repeated_plus.group())
         base_name = ion_name[: match_repeated_plus.start()]
-        return f"{base_name}<sup>{charge_count}+</sup>"
+        charge_str = "+" if charge_count == 1 else f"{charge_count}+"
+        return f"{base_name}<sup>{charge_str}</sup>"
 
     match_repeated_minus = re.search(r"-+$", ion_name)
     if match_repeated_minus:
         charge_count = len(match_repeated_minus.group())
         base_name = ion_name[: match_repeated_minus.start()]
-        return f"{base_name}<sup>{charge_count}-</sup>"
+        charge_str = "-" if charge_count == 1 else f"{charge_count}-"
+        return f"{base_name}<sup>{charge_str}</sup>"
 
-    # Pattern 2: Number after + or - (e.g., "y5+2", "b3-2")
+    # Pattern 2: Number after + or - (e.g., "precursor+2")
     match_plus_num = re.search(r"\+(\d+)$", ion_name)
     if match_plus_num:
-        charge_num = match_plus_num.group(1)
+        charge_num = int(match_plus_num.group(1))
         base_name = ion_name[: match_plus_num.start()]
-        return f"{base_name}<sup>{charge_num}+</sup>"
+        charge_str = "+" if charge_num == 1 else f"{charge_num}+"
+        return f"{base_name}<sup>{charge_str}</sup>"
 
     match_minus_num = re.search(r"-(\d+)$", ion_name)
     if match_minus_num:
-        charge_num = match_minus_num.group(1)
+        charge_num = int(match_minus_num.group(1))
         base_name = ion_name[: match_minus_num.start()]
-        return f"{base_name}<sup>{charge_num}-</sup>"
+        charge_str = "-" if charge_num == 1 else f"{charge_num}-"
+        return f"{base_name}<sup>{charge_str}</sup>"
 
     # No charge modifier found, return as-is
     return ion_name
@@ -660,7 +751,7 @@ def _draw_matched_ions(
         return
 
     sign = -1 if flip else 1
-    text_offset = -3 if flip else 3
+    text_offset = -5 if flip else 5  # Offset increased to accommodate subscript
     text_angle = 0
 
     # Build stems
@@ -772,7 +863,7 @@ def _add_annotations_from_data(
             # Add text annotation
             fig.add_annotation(
                 x=ion.theo_mz,
-                y=-display_int - 3,
+                y=-display_int - 5,
                 text=format_ion_label_with_superscript(ion.ion_name),
                 showarrow=False,
                 font={"size": 8, "color": "gray"},
