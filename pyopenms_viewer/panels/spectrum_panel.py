@@ -255,7 +255,17 @@ class SpectrumPanel(BasePanel):
 
     def _build_spectrum_plot(self):
         """Build the spectrum plot area."""
+        # Configure Plotly with SVG export option
+        plotly_config = {
+            "toImageButtonOptions": {
+                "format": "svg",
+                "filename": "spectrum",
+                "scale": 1,
+            },
+            "displaylogo": False,
+        }
         self.spectrum_plot = ui.plotly(go.Figure()).classes("w-full")
+        self.spectrum_plot._props["config"] = plotly_config
 
         # Event handlers
         self.spectrum_plot.on("plotly_click", self._on_plot_click)

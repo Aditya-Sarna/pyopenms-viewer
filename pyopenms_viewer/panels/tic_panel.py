@@ -34,7 +34,17 @@ class TICPanel(BasePanel):
                 ui.label("Click to view spectrum, drag to zoom RT range").classes(
                     "text-xs text-gray-500 mb-1"
                 )
+                # Configure Plotly with SVG export option
+                plotly_config = {
+                    "toImageButtonOptions": {
+                        "format": "svg",
+                        "filename": "tic",
+                        "scale": 1,
+                    },
+                    "displaylogo": False,
+                }
                 self.plot = ui.plotly(self._create_figure()).classes("w-full")
+                self.plot._props["config"] = plotly_config
                 # Only register events we actually need to avoid large websocket messages
                 self.plot.on("plotly_click", self._on_click)
                 # Note: plotly_selected removed - use plotly_relayout for zooming instead

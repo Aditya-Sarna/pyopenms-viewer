@@ -118,6 +118,17 @@ class SpectraTablePanel(BasePanel):
             ).props("dense").classes("text-xs text-gray-400")
             ui.tooltip("Show all peptide hits for each spectrum")
 
+            ui.element("div").classes("flex-grow")  # Spacer
+
+            # Export button
+            ui.button(
+                "Export TSV",
+                icon="download",
+                on_click=self._export_tsv
+            ).props("dense outline size=sm color=grey").tooltip(
+                "Export filtered table data as TSV"
+            )
+
     def _build_filter_controls(self):
         """Build the filter controls row."""
         with ui.row().classes("w-full items-end gap-2 mb-2 flex-wrap"):
@@ -331,6 +342,51 @@ class SpectraTablePanel(BasePanel):
         self.state.mirror_annotation_view = e.value
         if self.state.selected_spectrum_idx is not None:
             self.state.emit_selection_changed("spectrum", self.state.selected_spectrum_idx)
+
+    def _export_tsv(self):
+        """Export filtered table data as TSV file."""
+        data = self._get_filtered_data()
+        if not data:
+            ui.notify("No data to export", type="warning")
+            return
+
+        # Get column definitions
+        columns = self._build_columns()
+        column_fields = [col["field"] for col in columns]
+        column_labels = [col["label"] for col in columns]
+
+        # Build TSV content
+        lines = ["\t".join(column_labels)]  # Header row
+        for row in data:
+            values = []
+            for field in column_fields:
+                val = row.get(field, "")
+                # Convert None to empty string, format numbers
+                if val is None:
+                    val = ""
+                elif isinstance(val, float):
+                    val = f"{val:.4f}" if abs(val) < 1000 else f"{val:.2e}"
+                else:
+                    val = str(val)
+                values.append(val)
+            lines.append("\t".join(values))
+
+        tsv_content = "\n".join(lines)
+
+        # Escape backticks for JavaScript template literal
+        escaped_content = tsv_content.replace("`", "\\`")
+
+        # Trigger download using JavaScript
+        ui.run_javascript(f'''
+            const blob = new Blob([`{escaped_content}`], {{type: "text/tab-separated-values"}});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "spectra_table.tsv";
+            a.click();
+            URL.revokeObjectURL(url);
+        ''')
+        ui.notify(f"Exported {len(data)} rows", type="positive")
 
     def set_on_spectrum_selected(self, callback: Callable):
         """Set callback for when a spectrum is selected.
