@@ -578,7 +578,7 @@ async def create_ui():
                 # Delete selected measurement in spectrum browser
                 if hasattr(state, 'spectrum_selected_measurement_idx') and state.spectrum_selected_measurement_idx is not None:
                     state.delete_selected_measurement()
-            elif e.key.lower() == "g":
+            elif str(e.key).lower() == "g":
                 # Open go-to range dialog
                 if hasattr(state, 'peak_map_panel') and state.peak_map_panel:
                     state.peak_map_panel._open_range_popover()
