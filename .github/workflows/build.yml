@@ -54,7 +54,43 @@ jobs:
             --collect-all plotly \
             --hidden-import numpy._core._methods \
             --hidden-import numpy._core._dtype_ctypes \
-            pyopenms_viewer.py'
+            --hidden-import pyopenms_viewer \
+            --hidden-import pyopenms_viewer.app \
+            --hidden-import pyopenms_viewer.cli \
+            --hidden-import pyopenms_viewer.core \
+            --hidden-import pyopenms_viewer.core.config \
+            --hidden-import pyopenms_viewer.core.events \
+            --hidden-import pyopenms_viewer.core.state \
+            --hidden-import pyopenms_viewer.loaders \
+            --hidden-import pyopenms_viewer.loaders.chromatogram_loader \
+            --hidden-import pyopenms_viewer.loaders.feature_loader \
+            --hidden-import pyopenms_viewer.loaders.id_loader \
+            --hidden-import pyopenms_viewer.loaders.ion_mobility_loader \
+            --hidden-import pyopenms_viewer.loaders.mzml_loader \
+            --hidden-import pyopenms_viewer.loaders.spectrum_extractor \
+            --hidden-import pyopenms_viewer.rendering \
+            --hidden-import pyopenms_viewer.rendering.axis_renderer \
+            --hidden-import pyopenms_viewer.rendering.minimap_renderer \
+            --hidden-import pyopenms_viewer.rendering.overlay_renderer \
+            --hidden-import pyopenms_viewer.rendering.peak_map_renderer \
+            --hidden-import pyopenms_viewer.annotation \
+            --hidden-import pyopenms_viewer.annotation.spectrum_annotator \
+            --hidden-import pyopenms_viewer.annotation.theoretical_spectrum \
+            --hidden-import pyopenms_viewer.annotation.tick_formatter \
+            --hidden-import pyopenms_viewer.utils \
+            --hidden-import pyopenms_viewer.utils.coordinate_transform \
+            --hidden-import pyopenms_viewer.panels \
+            --hidden-import pyopenms_viewer.panels.base_panel \
+            --hidden-import pyopenms_viewer.panels.chromatogram_panel \
+            --hidden-import pyopenms_viewer.panels.faims_panel \
+            --hidden-import pyopenms_viewer.panels.features_table_panel \
+            --hidden-import pyopenms_viewer.panels.im_peak_map_panel \
+            --hidden-import pyopenms_viewer.panels.peak_map_panel \
+            --hidden-import pyopenms_viewer.panels.spectra_table_panel \
+            --hidden-import pyopenms_viewer.panels.spectrum_panel \
+            --hidden-import pyopenms_viewer.panels.tic_panel \
+            --hidden-import pyopenms_viewer.components \
+            pyopenms_viewer/__main__.py'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
