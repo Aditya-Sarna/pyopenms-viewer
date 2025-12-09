@@ -111,6 +111,7 @@ class OverlayRenderer:
                 break
 
             is_selected = idx == state.selected_feature_idx
+            is_hovered = idx == state.hover_feature_idx
             rt = feature.getRT()
             mz = feature.getMZ()
 
@@ -139,11 +140,22 @@ class OverlayRenderer:
 
             features_drawn += 1
 
-            # Colors
-            hull_color = state.selected_color if is_selected else state.hull_color
-            bbox_color = state.selected_color if is_selected else state.bbox_color
-            centroid_color = state.selected_color if is_selected else state.centroid_color
-            line_width = 3 if is_selected else 1
+            # Colors - priority: selected > hovered > default
+            if is_selected:
+                hull_color = state.selected_color
+                bbox_color = state.selected_color
+                centroid_color = state.selected_color
+                line_width = 3
+            elif is_hovered:
+                hull_color = state.hover_color
+                bbox_color = state.hover_color
+                centroid_color = state.hover_color
+                line_width = 2
+            else:
+                hull_color = state.hull_color
+                bbox_color = state.bbox_color
+                centroid_color = state.centroid_color
+                line_width = 1
 
             # Draw convex hulls
             if state.show_convex_hulls and hulls:
@@ -168,8 +180,34 @@ class OverlayRenderer:
             # Draw centroids
             if state.show_centroids:
                 cx, cy = self.data_to_plot_pixel(state, rt, mz)
-                r = 5 if is_selected else 3
-                draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=centroid_color, outline=(255, 255, 255, 255))
+
+                # Draw hover glow ring first (behind the centroid)
+                if is_hovered and not is_selected:
+                    glow_r = 8
+                    # Outer glow ring
+                    draw.ellipse(
+                        [cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r],
+                        outline=(*state.hover_color[:3], 150),
+                        width=2
+                    )
+
+                # Centroid size: selected > hovered > default
+                if is_selected:
+                    r = 6
+                    outline_width = 2
+                elif is_hovered:
+                    r = 5
+                    outline_width = 2
+                else:
+                    r = 3
+                    outline_width = 1
+
+                draw.ellipse(
+                    [cx - r, cy - r, cx + r, cy + r],
+                    fill=centroid_color,
+                    outline=(255, 255, 255, 255),
+                    width=outline_width
+                )
 
         img = Image.alpha_composite(img, overlay)
         return img

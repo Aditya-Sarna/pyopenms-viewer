@@ -103,11 +103,15 @@ class DEFAULTS:
 
     # Colors (RGBA tuples)
     CENTROID_COLOR = (0, 255, 100, 255)
+    HOVER_COLOR = (255, 200, 0, 255)  # Orange/yellow for hover highlight
     BBOX_COLOR = (255, 255, 0, 200)
     HULL_COLOR = (0, 200, 255, 150)
     SELECTED_COLOR = (255, 100, 255, 255)
     ID_COLOR = (255, 150, 50, 255)
     ID_SELECTED_COLOR = (255, 50, 50, 255)
+
+    # Feature selection
+    HOVER_SNAP_DISTANCE_PX = 15  # Pixel threshold for snapping to centroids
 
     # Neutral gray colors for axes (work on light and dark backgrounds)
     AXIS_COLOR = (136, 136, 136, 255)

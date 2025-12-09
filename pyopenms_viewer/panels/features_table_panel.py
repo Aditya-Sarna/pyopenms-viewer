@@ -60,6 +60,7 @@ class FeaturesTablePanel(BasePanel):
 
         # Subscribe to events
         self.state.on_data_loaded(self._on_data_loaded)
+        self.state.on_selection_changed(self._on_selection_changed)
 
         self._is_built = True
         return self.expansion
@@ -180,6 +181,72 @@ class FeaturesTablePanel(BasePanel):
             if self._has_data() and self.expansion:
                 self.expansion.value = True
 
+    def _on_selection_changed(self, selection_type: str, index: int | None):
+        """Handle selection changed event from other panels."""
+        if selection_type == "feature" and self.feature_table is not None:
+            # Check if we're already selecting this row to avoid loops
+            current_selection = self.feature_table.selected
+            current_idx = current_selection[0].get("idx") if current_selection else None
+
+            if index != current_idx:
+                if index is not None:
+                    # Find the row in the current table data that matches this index
+                    for row in self.feature_table.rows:
+                        if row.get("idx") == index:
+                            # Select this row in the table
+                            self.feature_table.selected = [row]
+                            # Navigate to the page containing this row
+                            self._navigate_to_row(index)
+                            break
+                else:
+                    # Clear selection
+                    self.feature_table.selected = []
+
+    def _navigate_to_row(self, feature_idx: int):
+        """Navigate table pagination to show the row with given feature index.
+
+        Args:
+            feature_idx: The feature index to navigate to
+        """
+        if self.feature_table is None:
+            return
+
+        # Get current pagination settings
+        pagination = self.feature_table._props.get("pagination", {})
+        rows_per_page = pagination.get("rowsPerPage", 8)
+        sort_by = pagination.get("sortBy", "intensity")
+        descending = pagination.get("descending", True)
+
+        # Get the current rows (which may be filtered)
+        rows = list(self.feature_table.rows)
+        if not rows:
+            return
+
+        # Sort rows the same way the table is sorted to find position
+        if sort_by:
+            rows = sorted(
+                rows,
+                key=lambda r: r.get(sort_by, 0) or 0,
+                reverse=descending
+            )
+
+        # Find the position of the feature in the sorted list
+        row_position = None
+        for i, row in enumerate(rows):
+            if row.get("idx") == feature_idx:
+                row_position = i
+                break
+
+        if row_position is None:
+            return
+
+        # Calculate which page this row is on (1-indexed)
+        page = (row_position // rows_per_page) + 1
+
+        # Update pagination to show that page
+        self.feature_table._props["pagination"]["page"] = page
+        self.feature_table.update()
+
     def _on_table_select(self, e):
         """Handle row selection."""
         if e.selection:
@@ -256,8 +323,8 @@ class FeaturesTablePanel(BasePanel):
             self.state.view_mz_min = max(self.state.mz_min, mz_min)
             self.state.view_mz_max = min(self.state.mz_max, mz_max)
 
-            # Update selected feature
-            self.state.selected_feature_idx = feature_idx
+            # Select the feature (this will emit selection_changed event)
+            self.state.select_feature(feature_idx)
 
             # Emit view changed
             self.state.emit_view_changed()

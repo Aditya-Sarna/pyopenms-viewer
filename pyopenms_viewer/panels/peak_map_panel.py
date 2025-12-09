@@ -92,6 +92,10 @@ class PeakMapPanel(BasePanel):
         # Callback for external update triggers
         self._on_update_callback: Optional[Callable] = None
 
+        # Last hover update time for debouncing
+        self._last_hover_update: float = 0.0
+        self._hover_debounce_ms: float = 50.0  # Minimum ms between hover updates
+
         # Plotly config for 3D view (must be included in figure dict)
         self._plotly_config = {
             "modeBarButtonsToRemove": ["autoScale2d"],
@@ -347,7 +351,8 @@ class PeakMapPanel(BasePanel):
     def _build_help_text(self):
         """Build the help text."""
         ui.label(
-            "Scroll to zoom, drag to select region, Shift+drag to measure, double-click to reset"
+            "Scroll to zoom, drag to select region, Shift+drag to measure, double-click to reset, "
+            "click centroid to select feature"
         ).classes("text-xs text-gray-500 mb-1")
 
     def _build_peak_map_area(self):
@@ -709,6 +714,76 @@ class PeakMapPanel(BasePanel):
             mz = self.state.view_mz_max - y_frac * mz_range
         return rt, mz
 
+    def _data_to_pixel(self, rt: float, mz: float) -> tuple[int, int]:
+        """Convert RT/m/z data coordinates to pixel coordinates."""
+        rt_range = self.state.view_rt_max - self.state.view_rt_min
+        mz_range = self.state.view_mz_max - self.state.view_mz_min
+
+        if rt_range == 0 or mz_range == 0:
+            return (0, 0)
+
+        if self.state.swap_axes:
+            # m/z on x-axis, RT on y-axis (inverted)
+            x = int((mz - self.state.view_mz_min) / mz_range * self.state.plot_width)
+            y = int((1 - (rt - self.state.view_rt_min) / rt_range) * self.state.plot_height)
+        else:
+            # RT on x-axis, m/z on y-axis (inverted)
+            x = int((rt - self.state.view_rt_min) / rt_range * self.state.plot_width)
+            y = int((1 - (mz - self.state.view_mz_min) / mz_range) * self.state.plot_height)
+
+        return (x + self.state.margin_left, y + self.state.margin_top)
+
+    def _find_nearest_feature(self, pixel_x: int, pixel_y: int) -> Optional[int]:
+        """Find the nearest feature centroid to the given pixel position.
+
+        Args:
+            pixel_x: X pixel coordinate
+            pixel_y: Y pixel coordinate
+
+        Returns:
+            Feature index if within snap distance, None otherwise
+        """
+        if self.state.feature_map is None or self.state.feature_map.size() == 0:
+            return None
+
+        if not self.state.show_centroids:
+            return None
+
+        min_dist_sq = self.state.hover_snap_distance_px ** 2
+        nearest_idx = None
+
+        # Get current view bounds
+        view_rt_min = self.state.view_rt_min if self.state.view_rt_min is not None else self.state.rt_min
+        view_rt_max = self.state.view_rt_max if self.state.view_rt_max is not None else self.state.rt_max
+        view_mz_min = self.state.view_mz_min if self.state.view_mz_min is not None else self.state.mz_min
+        view_mz_max = self.state.view_mz_max if self.state.view_mz_max is not None else self.state.mz_max
+
+        # Limit search to reasonable number of features
+        max_features_to_check = 10000
+
+        for idx, feature in enumerate(self.state.feature_map):
+            if idx >= max_features_to_check:
+                break
+
+            rt = feature.getRT()
+            mz = feature.getMZ()
+
+            # Skip if outside current view
+            if not (view_rt_min <= rt <= view_rt_max and view_mz_min <= mz <= view_mz_max):
+                continue
+
+            # Convert feature position to pixel coordinates
+            fx, fy = self._data_to_pixel(rt, mz)
+
+            # Calculate squared distance
+            dist_sq = (pixel_x - fx) ** 2 + (pixel_y - fy) ** 2
+
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                nearest_idx = idx
+
+        return nearest_idx
+
     def _on_peakmap_mouse(self, e: MouseEventArguments):
         """Handle mouse events on the peakmap."""
         if e.type == "mousedown":
@@ -758,6 +833,34 @@ class PeakMapPanel(BasePanel):
                 self._handle_panning(e)
             else:
                 self._draw_selection_overlay(e)
+        else:
+            # Not dragging - check for feature hover
+            self._handle_feature_hover(e)
+
+    def _handle_feature_hover(self, e: MouseEventArguments):
+        """Handle feature hover detection and highlighting."""
+        # Debounce hover updates
+        current_time = time.time() * 1000  # Convert to ms
+        if current_time - self._last_hover_update < self._hover_debounce_ms:
+            return
+
+        # Find nearest feature
+        nearest_idx = self._find_nearest_feature(int(e.image_x), int(e.image_y))
+
+        # Only update if hover changed
+        if nearest_idx != self.state.hover_feature_idx:
+            self.state.hover_feature_idx = nearest_idx
+            self._last_hover_update = current_time
+
+            # Update cursor style using element props
+            if self.image_element:
+                if nearest_idx is not None:
+                    self.image_element.style("cursor: pointer")
+                else:
+                    self.image_element.style("cursor: crosshair")
+
+            # Re-render to show hover highlight
+            self.update()
 
     def _handle_mouseup(self, e: MouseEventArguments):
         """Handle mouse up event."""
@@ -768,6 +871,8 @@ class PeakMapPanel(BasePanel):
         if self._drag_state["dragging"]:
             was_measuring = self._drag_state["measuring"]
             was_panning = self._drag_state["panning"]
+            start_x = self._drag_state["start_x"]
+            start_y = self._drag_state["start_y"]
             self._drag_state["dragging"] = False
             self._drag_state["measuring"] = False
             self._drag_state["panning"] = False
@@ -778,8 +883,47 @@ class PeakMapPanel(BasePanel):
                     self.update()  # Full resolution render
                 return
 
+            # Check if this was a click (minimal drag distance) vs a drag-to-zoom
+            dx = abs(e.image_x - start_x)
+            dy = abs(e.image_y - start_y)
+
+            # If it's a small movement, treat as click for feature selection
+            if dx < 5 and dy < 5:
+                self._handle_feature_click(e)
+                return
+
             # Handle zoom selection
             self._handle_zoom_selection(e)
+
+    def _handle_feature_click(self, e: MouseEventArguments):
+        """Handle click to select a feature."""
+        # If we have a hovered feature, select it
+        if self.state.hover_feature_idx is not None:
+            feature_idx = self.state.hover_feature_idx
+            self.state.select_feature(feature_idx)
+
+            # Show feature info in notification
+            if self.state.feature_map is not None and feature_idx < self.state.feature_map.size():
+                feature = self.state.feature_map[feature_idx]
+                rt = feature.getRT()
+                mz = feature.getMZ()
+                intensity = feature.getIntensity()
+                charge = feature.getCharge()
+
+                if self.state.rt_in_minutes:
+                    rt_str = f"{rt / 60:.2f} min"
+                else:
+                    rt_str = f"{rt:.1f} s"
+
+                charge_str = f"+{charge}" if charge > 0 else ""
+                ui.notify(
+                    f"Selected feature #{feature_idx}: RT={rt_str}, m/z={mz:.4f}{charge_str}, I={intensity:.2e}",
+                    type="info",
+                    position="bottom-right",
+                    timeout=3000
+                )
+
+            self.update()
 
     def _update_coord_display(self, image_x: float, image_y: float):
         """Update the coordinate display label."""
@@ -988,17 +1132,24 @@ class PeakMapPanel(BasePanel):
     def _on_mouseleave(self, e):
         """Handle mouse leave event."""
         was_panning = self._drag_state["panning"]
+        had_hover = self.state.hover_feature_idx is not None
+
         self._drag_state["dragging"] = False
         self._drag_state["measuring"] = False
         self._drag_state["panning"] = False
 
+        # Clear hover state
+        self.state.hover_feature_idx = None
+
         if self.image_element:
             self.image_element.content = ""
+            # Reset cursor
+            self.image_element.style("cursor: crosshair")
 
         if self.coord_label:
             self.coord_label.set_text("RT: --  m/z: --")
 
-        if was_panning:
+        if was_panning or had_hover:
             self.update()
 
     def _on_keyup(self, e):
