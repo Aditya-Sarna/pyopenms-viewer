@@ -47,9 +47,16 @@ class FAIMSPanel:
             self.card.set_visibility(False)
 
             with self.card:
-                ui.label("FAIMS Compensation Voltage Peak Maps").classes(
-                    "text-lg font-semibold mb-2 text-purple-300"
-                )
+                with ui.row().classes("w-full items-center mb-2"):
+                    ui.label("FAIMS Compensation Voltage Peak Maps").classes(
+                        "text-lg font-semibold text-purple-300"
+                    )
+                    ui.element("div").classes("flex-grow")
+                    ui.button(
+                        icon="download",
+                        on_click=self._save_all_png
+                    ).props("dense flat size=sm").tooltip("Save all FAIMS peak maps as PNG")
+
                 ui.label(
                     "Separate peak maps for each CV value - zoom/pan is synchronized"
                 ).classes("text-xs text-gray-500 mb-2")
@@ -143,3 +150,34 @@ class FAIMSPanel:
         """Handle view changed event - update FAIMS plots."""
         if self.state.show_faims_view:
             self.update()
+
+    def _save_all_png(self) -> None:
+        """Save all FAIMS peak map images as PNG files."""
+        if not self.cv_images:
+            ui.notify("No FAIMS images to save", type="warning")
+            return
+
+        saved_count = 0
+        for cv, img in self.cv_images.items():
+            if img is None:
+                continue
+            src = img._props.get("src", "")
+            if not src or not src.startswith("data:image/png;base64,"):
+                continue
+
+            # Create safe filename with CV value
+            cv_str = f"{cv:.1f}".replace(".", "_").replace("-", "neg")
+            filename = f"faims_cv_{cv_str}V.png"
+
+            ui.run_javascript(f'''
+                const link = document.createElement("a");
+                link.href = "{src}";
+                link.download = "{filename}";
+                link.click();
+            ''')
+            saved_count += 1
+
+        if saved_count > 0:
+            ui.notify(f"Downloading {saved_count} FAIMS peak map(s)", type="positive")
+        else:
+            ui.notify("No image data available", type="warning")

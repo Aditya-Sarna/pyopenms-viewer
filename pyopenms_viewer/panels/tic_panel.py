@@ -24,6 +24,25 @@ class TICPanel(BasePanel):
         self.plot: Optional[ui.plotly] = None
         self._updating_from_tic: bool = False
 
+        # Plotly config (must be included in figure dict)
+        self._plotly_config = {
+            "modeBarButtonsToRemove": ["autoScale2d"],
+            "displaylogo": False,
+            "toImageButtonOptions": {
+                "format": "svg",
+                "filename": "tic",
+                "width": 1200,
+                "height": 400,
+                "scale": 1,
+            },
+        }
+
+    def _figure_with_config(self, fig: go.Figure) -> dict:
+        """Convert go.Figure to dict and add config for modebar customization."""
+        fig_dict = fig.to_plotly_json()
+        fig_dict["config"] = self._plotly_config
+        return fig_dict
+
     def build(self, container: ui.element) -> ui.expansion:
         with container:
             self.expansion = ui.expansion(
@@ -34,13 +53,7 @@ class TICPanel(BasePanel):
                 ui.label("Click to view spectrum, drag to zoom RT range").classes(
                     "text-xs text-gray-500 mb-1"
                 )
-                self.plot = ui.plotly(self._create_figure()).classes("w-full")
-                # Configure Plotly modebar (must use _props['options']['config'])
-                self.plot._props["options"] = self.plot._props.get("options", {})
-                self.plot._props["options"]["config"] = {
-                    "modeBarButtonsToRemove": ["autoScale2d"],
-                    "displaylogo": False,
-                }
+                self.plot = ui.plotly(self._figure_with_config(self._create_figure())).classes("w-full")
                 # Only register events we actually need to avoid large websocket messages
                 self.plot.on("plotly_click", self._on_click)
                 # Note: plotly_selected removed - use plotly_relayout for zooming instead
@@ -56,7 +69,7 @@ class TICPanel(BasePanel):
 
     def update(self) -> None:
         if self.plot and not self._updating_from_tic:
-            self.plot.update_figure(self._create_figure())
+            self.plot.update_figure(self._figure_with_config(self._create_figure()))
 
     def _create_figure(self) -> go.Figure:
         """Create the TIC Plotly figure."""
@@ -116,7 +129,7 @@ class TICPanel(BasePanel):
             xaxis_title=f"RT ({rt_unit})",
             yaxis_title="Intensity",
             height=200,
-            margin=dict(l=60, r=20, t=40, b=40),
+            margin={"l": 60, "r": 20, "t": 40, "b": 40},
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             font={"color": "#888"},

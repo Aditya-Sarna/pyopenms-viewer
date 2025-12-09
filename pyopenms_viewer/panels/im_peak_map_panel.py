@@ -111,6 +111,11 @@ class IMPeakMapPanel(BasePanel):
                 on_click=self._reset_view
             ).props("dense outline size=sm").tooltip("Reset to full IM range")
 
+            ui.button(
+                icon="download",
+                on_click=self._save_png
+            ).props("dense flat size=sm").tooltip("Save ion mobility map as PNG")
+
     def _build_range_row(self):
         """Build the range display row."""
         with ui.row().classes("w-full"):
@@ -245,6 +250,27 @@ class IMPeakMapPanel(BasePanel):
         self.state.view_im_min = self.state.im_min
         self.state.view_im_max = self.state.im_max
         self.update()
+
+    def _save_png(self):
+        """Save ion mobility map as PNG file."""
+        if self.im_image_element is None:
+            ui.notify("No image to save", type="warning")
+            return
+
+        # Get current image source (base64 data URL)
+        src = self.im_image_element._props.get("src", "")
+        if not src or not src.startswith("data:image/png;base64,"):
+            ui.notify("No image data available", type="warning")
+            return
+
+        # Trigger download via JavaScript
+        ui.run_javascript(f'''
+            const link = document.createElement("a");
+            link.href = "{src}";
+            link.download = "ion_mobility_map.png";
+            link.click();
+        ''')
+        ui.notify("Downloading ion_mobility_map.png", type="positive")
 
     # === Mouse handlers ===
 

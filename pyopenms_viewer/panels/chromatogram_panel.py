@@ -42,6 +42,25 @@ class ChromatogramPanel(BasePanel):
             "#f38181", "#aa96da", "#fcbad3", "#a8d8ea", "#ffb6b9",
         ]
 
+        # Plotly config (must be included in figure dict)
+        self._plotly_config = {
+            "modeBarButtonsToRemove": ["autoScale2d"],
+            "displaylogo": False,
+            "toImageButtonOptions": {
+                "format": "svg",
+                "filename": "chromatogram",
+                "width": 1200,
+                "height": 400,
+                "scale": 1,
+            },
+        }
+
+    def _figure_with_config(self, fig: go.Figure) -> dict:
+        """Convert go.Figure to dict and add config for modebar customization."""
+        fig_dict = fig.to_plotly_json()
+        fig_dict["config"] = self._plotly_config
+        return fig_dict
+
     def build(self, container: ui.element) -> ui.expansion:
         """Build the chromatogram panel UI.
 
@@ -92,13 +111,7 @@ class ChromatogramPanel(BasePanel):
 
     def _build_plot(self):
         """Build the chromatogram plot."""
-        self.chromatogram_plot = ui.plotly(self._create_figure()).classes("w-full")
-        # Configure Plotly modebar (must use _props['options']['config'])
-        self.chromatogram_plot._props["options"] = self.chromatogram_plot._props.get("options", {})
-        self.chromatogram_plot._props["options"]["config"] = {
-            "modeBarButtonsToRemove": ["autoScale2d"],
-            "displaylogo": False,
-        }
+        self.chromatogram_plot = ui.plotly(self._figure_with_config(self._create_figure())).classes("w-full")
 
         # Store reference in state
         self.state.chromatogram_plot = self.chromatogram_plot
@@ -141,7 +154,7 @@ class ChromatogramPanel(BasePanel):
         """Update the chromatogram display."""
         if self.chromatogram_plot is not None:
             fig = self._create_figure()
-            self.chromatogram_plot.update_figure(fig)
+            self.chromatogram_plot.update_figure(self._figure_with_config(fig))
 
         # Update info label
         if self.info_label is not None:

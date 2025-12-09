@@ -92,6 +92,25 @@ class PeakMapPanel(BasePanel):
         # Callback for external update triggers
         self._on_update_callback: Optional[Callable] = None
 
+        # Plotly config for 3D view (must be included in figure dict)
+        self._plotly_config = {
+            "modeBarButtonsToRemove": ["autoScale2d"],
+            "displaylogo": False,
+            "toImageButtonOptions": {
+                "format": "svg",
+                "filename": "peak_map_3d",
+                "width": 1200,
+                "height": 800,
+                "scale": 1,
+            },
+        }
+
+    def _figure_with_config(self, fig) -> dict:
+        """Convert go.Figure to dict and add config for modebar customization."""
+        fig_dict = fig.to_plotly_json()
+        fig_dict["config"] = self._plotly_config
+        return fig_dict
+
     def build(self, container: ui.element) -> ui.expansion:
         """Build the peak map panel UI.
 
@@ -201,6 +220,14 @@ class PeakMapPanel(BasePanel):
                 .classes("text-cyan-400")
             )
             ui.tooltip("Show/hide the spectrum position marker (crosshair) on the 2D peakmap.")
+
+            ui.element("div").classes("flex-grow")
+
+            # Save PNG button
+            ui.button(
+                icon="download",
+                on_click=self._save_png
+            ).props("dense flat size=sm").tooltip("Save peak map as PNG")
 
     def _build_navigation_row(self):
         """Build the breadcrumb trail and coordinate display row."""
@@ -389,7 +416,7 @@ class PeakMapPanel(BasePanel):
             )
 
             with ui.element("div").style(f"width: {self.state.canvas_width}px; height: 500px;"):
-                self.plot_3d = ui.plotly(empty_fig).classes("w-full h-full")
+                self.plot_3d = ui.plotly(self._figure_with_config(empty_fig)).classes("w-full h-full")
 
         # Store reference in state
         self.state.scene_3d_container = self.scene_3d_container
@@ -550,6 +577,27 @@ class PeakMapPanel(BasePanel):
         self.state.show_spectrum_marker = self.spectrum_marker_cb.value
         if self.state.df is not None:
             self.update()
+
+    def _save_png(self):
+        """Save peak map as PNG file."""
+        if self.image_element is None:
+            ui.notify("No image to save", type="warning")
+            return
+
+        # Get current image source (base64 data URL)
+        src = self.image_element._props.get("src", "")
+        if not src or not src.startswith("data:image/png;base64,"):
+            ui.notify("No image data available", type="warning")
+            return
+
+        # Trigger download via JavaScript
+        ui.run_javascript(f'''
+            const link = document.createElement("a");
+            link.href = "{src}";
+            link.download = "peak_map.png";
+            link.click();
+        ''')
+        ui.notify("Downloading peak_map.png", type="positive")
 
     # === FAIMS handlers ===
 
@@ -1078,7 +1126,7 @@ class PeakMapPanel(BasePanel):
                 self._add_features_to_3d_plot(fig)
 
             # Update the plotly element
-            self.plot_3d.update_figure(fig)
+            self.plot_3d.update_figure(self._figure_with_config(fig))
 
             # Update status
             if self.view_3d_status:
