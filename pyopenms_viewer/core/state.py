@@ -187,6 +187,7 @@ class ViewerState:
 
         # ========== COLORS ==========
         self.centroid_color: tuple = DEFAULTS.CENTROID_COLOR
+        self.hover_color: tuple = DEFAULTS.HOVER_COLOR
         self.bbox_color: tuple = DEFAULTS.BBOX_COLOR
         self.hull_color: tuple = DEFAULTS.HULL_COLOR
         self.selected_color: tuple = DEFAULTS.SELECTED_COLOR
@@ -196,6 +197,9 @@ class ViewerState:
         self.tick_color: tuple = DEFAULTS.TICK_COLOR
         self.label_color: tuple = DEFAULTS.LABEL_COLOR
         self.grid_color: tuple = DEFAULTS.GRID_COLOR
+
+        # ========== FEATURE SELECTION ==========
+        self.hover_snap_distance_px: int = DEFAULTS.HOVER_SNAP_DISTANCE_PX
 
         # ========== IMAGE DIMENSIONS ==========
         self.plot_width: int = DEFAULTS.PLOT_WIDTH
