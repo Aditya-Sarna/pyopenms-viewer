@@ -78,13 +78,31 @@ class ChromatogramPanel(BasePanel):
             ui.element("div").classes("flex-grow")
 
             ui.button(
+                "Export TSV",
+                icon="download",
+                on_click=self._export_tsv
+            ).props("dense outline size=sm color=grey").tooltip(
+                "Export chromatogram table as TSV"
+            )
+
+            ui.button(
                 "Clear Selection",
                 on_click=self._clear_selection
             ).props("dense outline size=sm color=grey")
 
     def _build_plot(self):
         """Build the chromatogram plot."""
+        # Configure Plotly with SVG export option
+        plotly_config = {
+            "toImageButtonOptions": {
+                "format": "svg",
+                "filename": "chromatogram",
+                "scale": 1,
+            },
+            "displaylogo": False,
+        }
         self.chromatogram_plot = ui.plotly(self._create_figure()).classes("w-full")
+        self.chromatogram_plot._props["config"] = plotly_config
 
         # Store reference in state
         self.state.chromatogram_plot = self.chromatogram_plot
@@ -282,3 +300,58 @@ class ChromatogramPanel(BasePanel):
             self.chromatogram_table.selected = []
             self.chromatogram_table.update()
         self.update()
+
+    def _export_tsv(self):
+        """Export chromatogram table data as TSV file."""
+        data = self.state.chromatograms
+        if not data:
+            ui.notify("No data to export", type="warning")
+            return
+
+        # Column definitions matching the table
+        columns = [
+            {"field": "idx", "label": "#"},
+            {"field": "type", "label": "Type"},
+            {"field": "native_id", "label": "Native ID"},
+            {"field": "precursor_mz", "label": "Q1 (m/z)"},
+            {"field": "product_mz", "label": "Q3 (m/z)"},
+            {"field": "rt_min", "label": "RT Start"},
+            {"field": "rt_max", "label": "RT End"},
+            {"field": "n_points", "label": "Points"},
+            {"field": "max_int", "label": "Max Int"},
+        ]
+        column_fields = [col["field"] for col in columns]
+        column_labels = [col["label"] for col in columns]
+
+        # Build TSV content
+        lines = ["\t".join(column_labels)]  # Header row
+        for row in data:
+            values = []
+            for field in column_fields:
+                val = row.get(field, "")
+                # Convert None to empty string, format numbers
+                if val is None:
+                    val = ""
+                elif isinstance(val, float):
+                    val = f"{val:.4f}" if abs(val) < 1000 else f"{val:.2e}"
+                else:
+                    val = str(val)
+                values.append(val)
+            lines.append("\t".join(values))
+
+        tsv_content = "\n".join(lines)
+
+        # Escape backticks for JavaScript template literal
+        escaped_content = tsv_content.replace("`", "\\`")
+
+        # Trigger download using JavaScript
+        ui.run_javascript(f'''
+            const blob = new Blob([`{escaped_content}`], {{type: "text/tab-separated-values"}});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "chromatograms_table.tsv";
+            a.click();
+            URL.revokeObjectURL(url);
+        ''')
+        ui.notify(f"Exported {len(data)} rows", type="positive")
