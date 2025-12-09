@@ -55,6 +55,25 @@ class SpectrumPanel(BasePanel):
         # References to external update callbacks
         self._on_spectrum_changed_callback: Optional[Callable] = None
 
+        # Plotly config (must be included in figure dict)
+        self._plotly_config = {
+            "modeBarButtonsToRemove": ["autoScale2d"],
+            "displaylogo": False,
+            "toImageButtonOptions": {
+                "format": "svg",
+                "filename": "spectrum",
+                "width": 1200,
+                "height": 600,
+                "scale": 1,
+            },
+        }
+
+    def _figure_with_config(self, fig: go.Figure) -> dict:
+        """Convert go.Figure to dict and add config for modebar customization."""
+        fig_dict = fig.to_plotly_json()
+        fig_dict["config"] = self._plotly_config
+        return fig_dict
+
     def _downsample_spectrum(
         self,
         mz_array: np.ndarray,
@@ -255,17 +274,7 @@ class SpectrumPanel(BasePanel):
 
     def _build_spectrum_plot(self):
         """Build the spectrum plot area."""
-        # Configure Plotly with SVG export option
-        plotly_config = {
-            "toImageButtonOptions": {
-                "format": "svg",
-                "filename": "spectrum",
-                "scale": 1,
-            },
-            "displaylogo": False,
-        }
-        self.spectrum_plot = ui.plotly(go.Figure()).classes("w-full")
-        self.spectrum_plot._props["config"] = plotly_config
+        self.spectrum_plot = ui.plotly(self._figure_with_config(go.Figure())).classes("w-full")
 
         # Event handlers
         self.spectrum_plot.on("plotly_click", self._on_plot_click)
@@ -347,7 +356,7 @@ class SpectrumPanel(BasePanel):
 
         # Update plot
         if self.spectrum_plot is not None:
-            self.spectrum_plot.update_figure(fig)
+            self.spectrum_plot.update_figure(self._figure_with_config(fig))
 
         # Update navigation label
         if self.nav_label is not None:

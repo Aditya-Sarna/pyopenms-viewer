@@ -92,17 +92,13 @@ class ChromatogramPanel(BasePanel):
 
     def _build_plot(self):
         """Build the chromatogram plot."""
-        # Configure Plotly with SVG export option
-        plotly_config = {
-            "toImageButtonOptions": {
-                "format": "svg",
-                "filename": "chromatogram",
-                "scale": 1,
-            },
+        self.chromatogram_plot = ui.plotly(self._create_figure()).classes("w-full")
+        # Configure Plotly modebar (must use _props['options']['config'])
+        self.chromatogram_plot._props["options"] = self.chromatogram_plot._props.get("options", {})
+        self.chromatogram_plot._props["options"]["config"] = {
+            "modeBarButtonsToRemove": ["autoScale2d"],
             "displaylogo": False,
         }
-        self.chromatogram_plot = ui.plotly(self._create_figure()).classes("w-full")
-        self.chromatogram_plot._props["config"] = plotly_config
 
         # Store reference in state
         self.state.chromatogram_plot = self.chromatogram_plot
