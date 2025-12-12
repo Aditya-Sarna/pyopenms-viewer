@@ -720,7 +720,8 @@ class ViewerState:
             zoom_in: True to zoom in, False to zoom out
             emit_event: If True, emit view_changed event
         """
-        if self.df is None:
+        # Check if we have data (in-memory or out-of-core mode)
+        if self.df is None and self.data_manager is None:
             return
 
         # Save current state to zoom history
@@ -775,7 +776,8 @@ class ViewerState:
             y_frac: Vertical fraction (0-1) of minimap click
             emit_event: If True, emit view_changed event
         """
-        if self.df is None:
+        # Check if we have data (in-memory or out-of-core mode)
+        if self.df is None and self.data_manager is None:
             return
 
         # Convert minimap fractions to data coordinates (depends on axis orientation)
@@ -849,7 +851,8 @@ class ViewerState:
 
     def zoom_in(self, emit_event: bool = True) -> None:
         """Zoom in by 10% on all axes."""
-        if self.df is None:
+        # Check if we have data (in-memory or out-of-core mode)
+        if self.df is None and self.data_manager is None:
             return
 
         rt_range = (self.view_rt_max - self.view_rt_min) * 0.1
@@ -865,7 +868,8 @@ class ViewerState:
 
     def zoom_out(self, emit_event: bool = True) -> None:
         """Zoom out by 10% on all axes."""
-        if self.df is None:
+        # Check if we have data (in-memory or out-of-core mode)
+        if self.df is None and self.data_manager is None:
             return
 
         rt_range = (self.view_rt_max - self.view_rt_min) * 0.1
@@ -887,7 +891,8 @@ class ViewerState:
             mz_frac: Fraction of m/z range to pan (positive = up)
             emit_event: If True, emit view_changed event
         """
-        if self.df is None:
+        # Check if we have data (in-memory or out-of-core mode)
+        if self.df is None and self.data_manager is None:
             return
 
         rt_range = self.view_rt_max - self.view_rt_min
