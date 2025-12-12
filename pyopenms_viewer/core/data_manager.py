@@ -93,10 +93,14 @@ class DataManager:
         """
         self._source_file = source_file
 
-        # Drop existing view if present
+        # Drop existing registrations if present
         if self._peaks_registered:
             self.conn.execute("DROP VIEW IF EXISTS peaks")
-            self.conn.execute("DROP TABLE IF EXISTS peaks_table")
+            # Unregister the table (works for both registered DataFrames and actual tables)
+            try:
+                self.conn.unregister("peaks_table")
+            except Exception:
+                pass  # May not exist or already unregistered
 
         if self.out_of_core:
             # Write to Parquet
@@ -141,10 +145,13 @@ class DataManager:
         Returns:
             DataFrame to keep in memory, or None if data was written to disk
         """
-        # Drop existing view if present
+        # Drop existing registrations if present
         if self._im_peaks_registered:
             self.conn.execute("DROP VIEW IF EXISTS im_peaks")
-            self.conn.execute("DROP TABLE IF EXISTS im_peaks_table")
+            try:
+                self.conn.unregister("im_peaks_table")
+            except Exception:
+                pass
 
         if self.out_of_core:
             cache_key = self._get_cache_key(source_file)
