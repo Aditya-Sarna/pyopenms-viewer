@@ -191,6 +191,8 @@ class IMPeakMapPanel(BasePanel):
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
         if data_type == "mzml":
+            # Update visibility based on whether IM data is present
+            self.update_visibility()
             if self.state.has_ion_mobility:
                 self.update()
                 # Auto-expand if IM data present

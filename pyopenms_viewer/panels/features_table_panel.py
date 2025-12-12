@@ -176,6 +176,8 @@ class FeaturesTablePanel(BasePanel):
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
         if data_type == "features":
+            # Update visibility based on whether feature data is present
+            self.update_visibility()
             self.update()
             # Auto-expand if features present
             if self._has_data() and self.expansion:

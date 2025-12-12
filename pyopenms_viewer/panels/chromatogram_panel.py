@@ -279,6 +279,8 @@ class ChromatogramPanel(BasePanel):
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
         if data_type == "mzml":
+            # Update visibility based on whether chromatogram data is present
+            self.update_visibility()
             self.update()
             # Auto-expand if chromatograms are present
             if self.state.has_chromatograms and self.expansion:
