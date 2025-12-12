@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pyopenms import IdXMLFile
+from pyopenms import IdXMLFile, PeptideIdentificationList
 
 from pyopenms_viewer.core.state import ViewerState
 
@@ -227,7 +227,7 @@ class IDLoader:
         """
         try:
             self.state.protein_ids = []
-            self.state.peptide_ids = []
+            self.state.peptide_ids = PeptideIdentificationList()
             IdXMLFile().load(filepath, self.state.protein_ids, self.state.peptide_ids)
             self.state.id_file = filepath
             self.state.selected_id_idx = None

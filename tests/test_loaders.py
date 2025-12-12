@@ -202,3 +202,23 @@ class TestIDLoader:
         loader = IDLoader(state)
         result = loader.load_sync("/nonexistent/path/file.idXML")
         assert result is False
+
+    def test_link_ids_to_spectra(self):
+        """Test that IDs are correctly linked to spectra."""
+        assert BSA_MZML.exists(), f"Test file not found: {BSA_MZML}"
+        assert BSA_IDXML.exists(), f"Test file not found: {BSA_IDXML}"
+        state = ViewerState()
+        # Load mzML first
+        mzml_loader = MzMLLoader(state)
+        mzml_loader.load_sync(str(BSA_MZML))
+        # Load IDs (this also links them to spectra)
+        id_loader = IDLoader(state)
+        id_loader.load_sync(str(BSA_IDXML))
+        # Count linked spectra
+        n_linked = sum(1 for s in state.spectrum_data if s.get("id_idx") is not None)
+        assert n_linked > 0, "No spectra were linked to IDs"
+        # Verify linked spectra have sequence info
+        for spec in state.spectrum_data:
+            if spec.get("id_idx") is not None:
+                assert spec["sequence"] != "-", "Linked spectrum should have sequence"
+                break
