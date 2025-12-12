@@ -41,9 +41,15 @@ class MinimapRenderer:
         Returns:
             Base64-encoded PNG string, or None if no data
         """
-        # Get data for minimap (uses data manager if available)
+        # Get data for minimap
+        # If downsampling is enabled, use data_manager's downsampled query
+        # Otherwise, get full data for accurate representation
         if state.data_manager is not None:
-            minimap_df = state.data_manager.query_peaks_for_minimap()
+            if state.peakmap_downsampling:
+                minimap_df = state.data_manager.query_peaks_for_minimap()
+            else:
+                # No downsampling - get all peaks
+                minimap_df = state.data_manager.query_all_peaks()
         else:
             minimap_df = state.df
 

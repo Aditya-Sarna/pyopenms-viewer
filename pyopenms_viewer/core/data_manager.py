@@ -297,6 +297,24 @@ class DataManager:
                 sample_rate = max(1, total // minimap_pixels)
                 return self._df.iloc[::sample_rate]
 
+    def query_all_peaks(self) -> pd.DataFrame | None:
+        """Query all peaks without downsampling.
+
+        Use this when downsampling is disabled and full data accuracy is needed.
+
+        Returns:
+            DataFrame with all peaks, or None if no data
+        """
+        if not self._peaks_registered:
+            return None
+
+        if self.out_of_core:
+            return self.conn.execute("""
+                SELECT rt, mz, log_intensity FROM peaks
+            """).fetchdf()
+        else:
+            return self._df
+
     def get_bounds(self) -> dict[str, float]:
         """Get data bounds without loading all data.
 
