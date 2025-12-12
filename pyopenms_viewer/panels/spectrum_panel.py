@@ -177,7 +177,7 @@ class SpectrumPanel(BasePanel):
             ui.button(
                 ">|",
                 on_click=lambda: self._navigate_to(
-                    self.state.exp.size() - 1 if self.state.exp else 0
+                    len(self.state.exp) - 1 if self.state.exp else 0
                 ),
             ).props("dense size=sm").tooltip("Last")
 
@@ -293,7 +293,7 @@ class SpectrumPanel(BasePanel):
 
     def _has_data(self) -> bool:
         """Check if panel has data to display."""
-        return self.state.exp is not None and self.state.exp.size() > 0
+        return self.state.exp is not None and len(self.state.exp) > 0
 
     def show_spectrum(self, spectrum_idx: int) -> None:
         """Display a spectrum in the panel.
@@ -303,7 +303,7 @@ class SpectrumPanel(BasePanel):
         Args:
             spectrum_idx: Index of spectrum to display
         """
-        if self.state.exp is None or spectrum_idx < 0 or spectrum_idx >= self.state.exp.size():
+        if self.state.exp is None or spectrum_idx < 0 or spectrum_idx >= len(self.state.exp):
             return
 
         self.state.selected_spectrum_idx = spectrum_idx
@@ -360,7 +360,7 @@ class SpectrumPanel(BasePanel):
 
         # Update navigation label
         if self.nav_label is not None:
-            self.nav_label.set_text(f"Spectrum {spectrum_idx + 1} of {self.state.exp.size()}")
+            self.nav_label.set_text(f"Spectrum {spectrum_idx + 1} of {len(self.state.exp)}")
 
     def _create_spectrum_figure(
         self,
@@ -1368,7 +1368,7 @@ class SpectrumPanel(BasePanel):
 
     def _navigate(self, direction: int):
         """Navigate to prev/next spectrum."""
-        if self.state.exp is None or self.state.exp.size() == 0:
+        if self.state.exp is None or len(self.state.exp) == 0:
             return
 
         if self.state.selected_spectrum_idx is None:
@@ -1376,25 +1376,25 @@ class SpectrumPanel(BasePanel):
         else:
             new_idx = self.state.selected_spectrum_idx + direction
 
-        new_idx = max(0, min(self.state.exp.size() - 1, new_idx))
+        new_idx = max(0, min(len(self.state.exp) - 1, new_idx))
         self.show_spectrum(new_idx)
 
     def _navigate_to(self, index: int):
         """Navigate to a specific spectrum index."""
-        if self.state.exp is None or self.state.exp.size() == 0:
+        if self.state.exp is None or len(self.state.exp) == 0:
             return
-        index = max(0, min(self.state.exp.size() - 1, index))
+        index = max(0, min(len(self.state.exp) - 1, index))
         self.show_spectrum(index)
 
     def _navigate_by_ms_level(self, direction: int, ms_level: int):
         """Navigate to prev/next spectrum of specific MS level."""
-        if self.state.exp is None or self.state.exp.size() == 0:
+        if self.state.exp is None or len(self.state.exp) == 0:
             return
 
         start_idx = self.state.selected_spectrum_idx if self.state.selected_spectrum_idx is not None else -1
 
         if direction > 0:
-            for i in range(start_idx + 1, self.state.exp.size()):
+            for i in range(start_idx + 1, len(self.state.exp)):
                 if self.state.exp[i].getMSLevel() == ms_level:
                     self.show_spectrum(i)
                     return

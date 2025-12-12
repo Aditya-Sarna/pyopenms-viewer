@@ -94,7 +94,7 @@ async def create_ui():
                             id_info_label.set_text(f"IDs: {len(state.peptide_ids):,} ({n_linked} linked)")
 
                     state.emit_data_loaded("mzml")
-                    info_text = f"Loaded: {name} | Spectra: {state.exp.size():,} | Peaks: {len(state.df):,}"
+                    info_text = f"Loaded: {name} | Spectra: {len(state.exp):,} | Peaks: {len(state.df):,}"
                     if state.has_faims:
                         info_text += f" | FAIMS: {len(state.faims_cvs)} CVs"
                     if info_label:

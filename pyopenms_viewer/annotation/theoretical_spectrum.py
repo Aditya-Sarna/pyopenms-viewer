@@ -93,7 +93,7 @@ def generate_theoretical_spectrum(
                     ion_names.append(name)
             break
 
-    for i in range(spec.size()):
+    for i in range(len(spec)):
         mz = spec[i].getMZ()
         intensity = spec[i].getIntensity()
         ion_name = ion_names[i] if i < len(ion_names) else ""

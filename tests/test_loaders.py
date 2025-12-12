@@ -32,7 +32,7 @@ class TestMzMLLoader:
         result = loader.parse(str(BSA_MZML))
         assert result is True
         assert state.exp is not None
-        assert state.exp.size() > 0
+        assert len(state.exp) > 0
 
     def test_parse_mzml_file_not_found(self):
         """Test that parsing a non-existent file returns False."""
