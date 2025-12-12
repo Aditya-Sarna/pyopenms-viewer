@@ -358,6 +358,11 @@ class MzMLLoader:
             self.state.view_mz_min = self.state.mz_min
             self.state.view_mz_max = self.state.mz_max
 
+            # Auto-enable downsampling if any spectrum has more than 10000 peaks
+            max_peaks_per_spectrum = max((len(spec) for spec in self.state.exp), default=0)
+            if max_peaks_per_spectrum > 10000:
+                self.state.peakmap_downsampling = True
+
             self.state.current_file = filepath
             return True
 
