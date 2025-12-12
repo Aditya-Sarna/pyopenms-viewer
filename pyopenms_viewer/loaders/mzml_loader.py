@@ -19,7 +19,7 @@ from pyopenms import MSExperiment, MzMLFile, DriftTimeUnit
 from pyopenms_viewer.core.state import ViewerState
 
 # Regex to extract CV from filter string (e.g., "cv=-45.00" or "cv=0.00")
-_CV_FILTER_PATTERN = re.compile(r'\bcv=(-?\d+(?:\.\d+)?)\b', re.IGNORECASE)
+_CV_FILTER_PATTERN = re.compile(r"\bcv=(-?\d+(?:\.\d+)?)\b", re.IGNORECASE)
 
 
 def get_cv_from_spectrum(spec) -> Optional[float]:
@@ -271,6 +271,7 @@ class MzMLLoader:
 
             # Extract chromatograms
             from pyopenms_viewer.loaders.chromatogram_loader import extract_chromatograms
+
             extract_chromatograms(self.state)
 
             if progress_callback:
@@ -278,6 +279,7 @@ class MzMLLoader:
 
             # Extract ion mobility data
             from pyopenms_viewer.loaders.ion_mobility_loader import extract_ion_mobility_data
+
             extract_ion_mobility_data(self.state)
 
             if progress_callback:
@@ -285,40 +287,61 @@ class MzMLLoader:
 
             # Extract spectrum metadata
             from pyopenms_viewer.loaders.spectrum_extractor import extract_spectrum_data
+
             self.state.spectrum_data = extract_spectrum_data(self.state)
 
             if progress_callback:
                 progress_callback("Creating DataFrame...", 0.85)
 
             # Create main DataFrame
-            self.state.df = pd.DataFrame({"rt": rts, "mz": mzs, "intensity": intensities})
+            df = pd.DataFrame({"rt": rts, "mz": mzs, "intensity": intensities})
             if self.state.has_faims:
-                self.state.df["cv"] = cvs
-            self.state.df["log_intensity"] = np.log1p(self.state.df["intensity"])
+                df["cv"] = cvs
+            df["log_intensity"] = np.log1p(df["intensity"])
+
+            if progress_callback:
+                progress_callback("Registering with data manager...", 0.88)
+
+            # Register DataFrame with data manager (handles both in-memory and out-of-core)
+            if self.state.data_manager is not None:
+                # data_manager.register_peaks returns DataFrame for in-memory, None for out-of-core
+                self.state.df = self.state.data_manager.register_peaks(df, filepath)
+
+                # Get bounds from data manager (works for both modes)
+                bounds = self.state.data_manager.get_bounds()
+                self.state.rt_min = bounds["rt_min"]
+                self.state.rt_max = bounds["rt_max"]
+                self.state.mz_min = bounds["mz_min"]
+                self.state.mz_max = bounds["mz_max"]
+            else:
+                # Legacy: no data manager, keep DataFrame in state
+                self.state.df = df
 
             if progress_callback:
                 progress_callback("Finalizing...", 0.95)
 
-            # Create per-CV DataFrames for FAIMS view
+            # Create per-CV DataFrames for FAIMS view (only in-memory mode)
             self.state.faims_data = {}
-            if self.state.has_faims:
+            if self.state.has_faims and self.state.df is not None:
                 for cv in self.state.faims_cvs:
                     cv_df = self.state.df[self.state.df["cv"] == cv].copy()
                     self.state.faims_data[cv] = cv_df
 
-            # Set bounds from peak data
-            if len(self.state.df) > 0:
+            # Set bounds from peak data (fallback if data_manager not used)
+            if self.state.data_manager is None and self.state.df is not None and len(self.state.df) > 0:
                 self.state.rt_min = float(self.state.df["rt"].min())
                 self.state.rt_max = float(self.state.df["rt"].max())
                 self.state.mz_min = float(self.state.df["mz"].min())
                 self.state.mz_max = float(self.state.df["mz"].max())
-            else:
+            elif self.state.data_manager is None:
                 # Fall back to IM data or spectrum metadata
                 if self.state.has_ion_mobility and self.state.im_df is not None and len(self.state.im_df) > 0:
                     self.state.mz_min = float(self.state.im_df["mz"].min())
                     self.state.mz_max = float(self.state.im_df["mz"].max())
                 if self.state.spectrum_data:
-                    rts_meta = [s["rt"] for s in self.state.spectrum_data if isinstance(s["rt"], (int, float)) and s["rt"] > 0]
+                    rts_meta = [
+                        s["rt"] for s in self.state.spectrum_data if isinstance(s["rt"], (int, float)) and s["rt"] > 0
+                    ]
                     if rts_meta:
                         self.state.rt_min = min(rts_meta)
                         self.state.rt_max = max(rts_meta)
@@ -340,6 +363,7 @@ class MzMLLoader:
 
         except Exception as e:
             import traceback
+
             print(f"Error processing mzML: {e}")
             traceback.print_exc()
             return False

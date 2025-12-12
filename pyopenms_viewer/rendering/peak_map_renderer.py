@@ -94,31 +94,43 @@ class PeakMapRenderer:
         Returns:
             Base64-encoded PNG string, or empty string if no data
         """
-        if state.df is None or len(state.df) == 0:
-            return ""
-
         # Get view bounds
         view_rt_min = state.view_rt_min if state.view_rt_min is not None else state.rt_min
         view_rt_max = state.view_rt_max if state.view_rt_max is not None else state.rt_max
         view_mz_min = state.view_mz_min if state.view_mz_min is not None else state.mz_min
         view_mz_max = state.view_mz_max if state.view_mz_max is not None else state.mz_max
 
-        # Determine which DataFrame to use (CV-filtered or full)
-        if state.has_faims and state.selected_faims_cv is not None and state.selected_faims_cv in state.faims_data:
-            source_df = state.faims_data[state.selected_faims_cv]
+        # Get peaks in view - two paths for performance:
+        #
+        # IN-MEMORY MODE (state.df is not None):
+        #   Use direct pandas boolean masking for best performance (~22ms for 5M peaks).
+        #   This is the fast path for datasets that fit in RAM.
+        #
+        # OUT-OF-CORE MODE (state.df is None):
+        #   Use state.get_peaks_in_view() which queries via DuckDB from Parquet files.
+        #   Slower (~74ms) but enables viewing datasets larger than available RAM.
+        #   The DataManager handles the DuckDB queries transparently.
+        #
+        if state.df is not None:
+            # Fast path: direct pandas filtering (in-memory mode)
+            # Determine which DataFrame to use (CV-filtered or full)
+            if state.has_faims and state.selected_faims_cv is not None and state.selected_faims_cv in state.faims_data:
+                source_df = state.faims_data[state.selected_faims_cv]
+            else:
+                source_df = state.df
+
+            mask = (
+                (source_df["rt"] >= view_rt_min)
+                & (source_df["rt"] <= view_rt_max)
+                & (source_df["mz"] >= view_mz_min)
+                & (source_df["mz"] <= view_mz_max)
+            )
+            view_df = source_df[mask]
         else:
-            source_df = state.df
+            # Out-of-core path: query via DuckDB (handles FAIMS CV filtering internally)
+            view_df = state.get_peaks_in_view()
 
-        # Filter to current view
-        mask = (
-            (source_df["rt"] >= view_rt_min)
-            & (source_df["rt"] <= view_rt_max)
-            & (source_df["mz"] >= view_mz_min)
-            & (source_df["mz"] <= view_mz_max)
-        )
-        view_df = source_df[mask]
-
-        if len(view_df) == 0:
+        if view_df is None or len(view_df) == 0:
             return ""
 
         # Render with Datashader
@@ -427,23 +439,34 @@ class IMPeakMapRenderer:
         Returns:
             Base64-encoded PNG string
         """
-        if state.im_df is None or len(state.im_df) == 0:
-            return ""
-
         view_mz_min = state.view_mz_min if state.view_mz_min is not None else state.mz_min
         view_mz_max = state.view_mz_max if state.view_mz_max is not None else state.mz_max
         view_im_min = state.view_im_min if state.view_im_min is not None else state.im_min
         view_im_max = state.view_im_max if state.view_im_max is not None else state.im_max
 
-        mask = (
-            (state.im_df["mz"] >= view_mz_min)
-            & (state.im_df["mz"] <= view_mz_max)
-            & (state.im_df["im"] >= view_im_min)
-            & (state.im_df["im"] <= view_im_max)
-        )
-        view_df = state.im_df[mask]
+        # Get IM peaks in view - two paths for performance:
+        #
+        # IN-MEMORY MODE (state.im_df is not None):
+        #   Use direct pandas boolean masking for best performance.
+        #
+        # OUT-OF-CORE MODE (state.im_df is None):
+        #   Use state.get_im_peaks_in_view() which queries via DuckDB from Parquet.
+        #   The DataManager handles the DuckDB queries transparently.
+        #
+        if state.im_df is not None:
+            # Fast path: direct pandas filtering (in-memory mode)
+            mask = (
+                (state.im_df["mz"] >= view_mz_min)
+                & (state.im_df["mz"] <= view_mz_max)
+                & (state.im_df["im"] >= view_im_min)
+                & (state.im_df["im"] <= view_im_max)
+            )
+            view_df = state.im_df[mask]
+        else:
+            # Out-of-core path: query via DuckDB
+            view_df = state.get_im_peaks_in_view()
 
-        if len(view_df) == 0:
+        if view_df is None or len(view_df) == 0:
             return ""
 
         # m/z on x-axis, IM on y-axis
@@ -680,19 +703,22 @@ class IMPeakMapRenderer:
         Returns:
             Tuple of (im_values, intensities) arrays for plotting
         """
-        if state.im_df is None or len(state.im_df) == 0:
-            return np.array([]), np.array([])
+        # Get IM peaks - use same dual-path approach as render():
+        # IN-MEMORY: direct pandas filtering, OUT-OF-CORE: DuckDB query
+        if state.im_df is not None:
+            # Fast path: direct pandas filtering (in-memory mode)
+            mask = (
+                (state.im_df["mz"] >= mz_min)
+                & (state.im_df["mz"] <= mz_max)
+                & (state.im_df["im"] >= im_min)
+                & (state.im_df["im"] <= im_max)
+            )
+            filtered_df = state.im_df[mask]
+        else:
+            # Out-of-core path: query via DuckDB
+            filtered_df = state.get_im_peaks_in_view()
 
-        # Filter to m/z range and current IM view
-        mask = (
-            (state.im_df["mz"] >= mz_min)
-            & (state.im_df["mz"] <= mz_max)
-            & (state.im_df["im"] >= im_min)
-            & (state.im_df["im"] <= im_max)
-        )
-        filtered_df = state.im_df[mask]
-
-        if len(filtered_df) == 0:
+        if filtered_df is None or len(filtered_df) == 0:
             return np.array([]), np.array([])
 
         # Bin IM values and sum intensities

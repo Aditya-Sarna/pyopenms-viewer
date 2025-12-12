@@ -103,24 +103,41 @@ def extract_ion_mobility_data(state: ViewerState) -> None:
     int_concat = np.concatenate(all_int)
 
     # Create DataFrame
-    state.im_df = pd.DataFrame({
-        "mz": mz_concat,
-        "im": im_concat,
-        "intensity": int_concat,
-    })
-    state.im_df["log_intensity"] = np.log1p(state.im_df["intensity"])
+    im_df = pd.DataFrame(
+        {
+            "mz": mz_concat,
+            "im": im_concat,
+            "intensity": int_concat,
+        }
+    )
+    im_df["log_intensity"] = np.log1p(im_df["intensity"])
 
-    # Set bounds
-    state.im_min = float(state.im_df["im"].min())
-    state.im_max = float(state.im_df["im"].max())
+    # Register with data manager if available (handles both in-memory and out-of-core)
+    if state.data_manager is not None and state.current_file:
+        # data_manager.register_im_peaks returns DataFrame for in-memory, None for out-of-core
+        state.im_df = state.data_manager.register_im_peaks(im_df, state.current_file)
+
+        # Get bounds from data manager
+        im_bounds = state.data_manager.get_im_bounds()
+        state.im_min = im_bounds["im_min"]
+        state.im_max = im_bounds["im_max"]
+        im_mz_min = im_bounds["mz_min"]
+        im_mz_max = im_bounds["mz_max"]
+    else:
+        # Legacy: no data manager, keep DataFrame in state
+        state.im_df = im_df
+        state.im_min = float(im_df["im"].min())
+        state.im_max = float(im_df["im"].max())
+        im_mz_min = float(im_df["mz"].min())
+        im_mz_max = float(im_df["mz"].max())
+
+    # Ensure valid IM range
     if state.im_max <= state.im_min:
         state.im_max = state.im_min + 1.0
     state.view_im_min = state.im_min
     state.view_im_max = state.im_max
 
     # Update mz bounds from IM data if not already set
-    im_mz_min = float(state.im_df["mz"].min())
-    im_mz_max = float(state.im_df["mz"].max())
     if state.mz_min == 0 or im_mz_min < state.mz_min:
         state.mz_min = im_mz_min
     if state.mz_max == 0 or im_mz_max > state.mz_max:

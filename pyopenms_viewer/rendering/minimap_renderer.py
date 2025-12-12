@@ -41,7 +41,13 @@ class MinimapRenderer:
         Returns:
             Base64-encoded PNG string, or None if no data
         """
-        if state.df is None or len(state.df) == 0:
+        # Get data for minimap (uses data manager if available)
+        if state.data_manager is not None:
+            minimap_df = state.data_manager.query_peaks_for_minimap()
+        else:
+            minimap_df = state.df
+
+        if minimap_df is None or len(minimap_df) == 0:
             return None
 
         # Create minimap canvas - swap axes to match main view
@@ -53,7 +59,7 @@ class MinimapRenderer:
                 x_range=(state.mz_min, state.mz_max),
                 y_range=(state.rt_min, state.rt_max),
             )
-            agg = cvs.points(state.df, "mz", "rt", agg=ds.max("log_intensity"))
+            agg = cvs.points(minimap_df, "mz", "rt", agg=ds.max("log_intensity"))
         else:
             # RT on x-axis, m/z on y-axis (traditional)
             cvs = ds.Canvas(
@@ -62,7 +68,7 @@ class MinimapRenderer:
                 x_range=(state.rt_min, state.rt_max),
                 y_range=(state.mz_min, state.mz_max),
             )
-            agg = cvs.points(state.df, "rt", "mz", agg=ds.max("log_intensity"))
+            agg = cvs.points(minimap_df, "rt", "mz", agg=ds.max("log_intensity"))
 
         # Apply color map with linear scaling
         img = tf.shade(agg, cmap=COLORMAPS[state.colormap], how="linear")

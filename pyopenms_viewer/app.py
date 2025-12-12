@@ -30,8 +30,17 @@ async def create_ui():
 
     This is called by NiceGUI as the root page handler.
     """
+    # Get CLI options for initialization
+    from pyopenms_viewer.cli import get_cli_options
+
+    cli_options = get_cli_options()
+
     # Create shared state (single instance for all components)
     state = ViewerState()
+
+    # Initialize data manager with CLI options
+    cache_dir = Path(cli_options["cache_dir"]) if cli_options["cache_dir"] else None
+    state.init_data_manager(out_of_core=cli_options["out_of_core"], cache_dir=cache_dir)
 
     # Setup dark mode
     dark_mode = os.environ.get("PYOPENMS_VIEWER_DARK_MODE", "1") == "1"
@@ -71,8 +80,10 @@ async def create_ui():
 
     with ui.column().classes("w-full items-center p-2"):
         # Compact toolbar for file operations and info display
-        with ui.row().classes("w-full max-w-[1700px] items-center gap-2 px-2 py-1 rounded").style(
-            "background: rgba(128,128,128,0.1);"
+        with (
+            ui.row()
+            .classes("w-full max-w-[1700px] items-center gap-2 px-2 py-1 rounded")
+            .style("background: rgba(128,128,128,0.1);")
         ):
             # Setup helper functions for file loading
             async def load_mzml(filepath: str, original_name: str = None):
@@ -88,18 +99,28 @@ async def create_ui():
                     # If IDs were already loaded, link them to the new spectra
                     if state.peptide_ids:
                         from pyopenms_viewer.loaders import link_ids_to_spectra
+
                         link_ids_to_spectra(state)
                         n_linked = sum(1 for s in state.spectrum_data if s.get("id_idx") is not None)
                         if id_info_label:
                             id_info_label.set_text(f"IDs: {len(state.peptide_ids):,} ({n_linked} linked)")
 
                     state.emit_data_loaded("mzml")
-                    info_text = f"Loaded: {name} | Spectra: {len(state.exp):,} | Peaks: {len(state.df):,}"
+                    # Get peak count (works for both in-memory and out-of-core modes)
+                    if state.data_manager is not None:
+                        peak_count = state.data_manager.get_peak_count()
+                    elif state.df is not None:
+                        peak_count = len(state.df)
+                    else:
+                        peak_count = 0
+                    info_text = f"Loaded: {name} | Spectra: {len(state.exp):,} | Peaks: {peak_count:,}"
                     if state.has_faims:
                         info_text += f" | FAIMS: {len(state.faims_cvs)} CVs"
+                    if state.out_of_core:
+                        info_text += " | Out-of-core"
                     if info_label:
                         info_label.set_text(info_text)
-                    ui.notify(f"Loaded {len(state.df):,} peaks from {name}", type="positive")
+                    ui.notify(f"Loaded {peak_count:,} peaks from {name}", type="positive")
                 else:
                     ui.notify(f"Failed to load {name}", type="negative")
 
@@ -132,7 +153,9 @@ async def create_ui():
                             state.emit_data_loaded("features")
                             if feature_info_label:
                                 feature_info_label.set_text(f"Features: {state.feature_map.size():,}")
-                            ui.notify(f"Loaded {state.feature_map.size():,} features from {original_name}", type="positive")
+                            ui.notify(
+                                f"Loaded {state.feature_map.size():,} features from {original_name}", type="positive"
+                            )
 
                     elif filename.endswith(".idxml") or (filename.endswith(".xml") and "id" in filename):
                         loader = IDLoader(state)
@@ -195,7 +218,9 @@ async def create_ui():
                                 success = await run.io_bound(loader.load_sync, filepath)
                                 if success:
                                     state.emit_data_loaded("features")
-                                    ui.notify(f"Loaded {state.feature_map.size():,} features from {name}", type="positive")
+                                    ui.notify(
+                                        f"Loaded {state.feature_map.size():,} features from {name}", type="positive"
+                                    )
                             elif ext == ".idxml":
                                 loader = IDLoader(state)
                                 success = await run.io_bound(loader.load_sync, filepath)
@@ -266,9 +291,7 @@ async def create_ui():
 
                     # Panel visibility section
                     ui.label("Visibility").classes("text-sm font-semibold text-gray-400 mt-2")
-                    ui.label("Toggle panels on/off. 'Auto' hides when no data.").classes(
-                        "text-xs text-gray-500 mb-2"
-                    )
+                    ui.label("Toggle panels on/off. 'Auto' hides when no data.").classes("text-xs text-gray-500 mb-2")
 
                     visibility_container = ui.column().classes("w-full gap-1 mb-4")
 
@@ -310,6 +333,7 @@ async def create_ui():
                                             "dense size=sm"
                                         ).classes("text-xs")
                                     else:
+
                                         def make_checkbox_handler(pid=panel_id):
                                             def handler(e):
                                                 state.panel_visibility[pid] = e.value
@@ -335,8 +359,10 @@ async def create_ui():
                         with panel_list:
                             for idx, panel_id in enumerate(state.panel_order):
                                 panel_def = state.panel_definitions.get(panel_id, {})
-                                with ui.row().classes("w-full items-center gap-2 p-1 rounded").style(
-                                    "background: rgba(128,128,128,0.15);"
+                                with (
+                                    ui.row()
+                                    .classes("w-full items-center gap-2 p-1 rounded")
+                                    .style("background: rgba(128,128,128,0.15);")
                                 ):
                                     ui.icon(panel_def.get("icon", "widgets")).classes("text-gray-400 text-sm")
                                     ui.label(panel_def.get("name", panel_id)).classes("flex-grow text-sm")
@@ -368,6 +394,38 @@ async def create_ui():
 
                     refresh_list()
 
+                    ui.separator().classes("my-2")
+
+                    # Performance section
+                    ui.label("Performance").classes("text-sm font-semibold text-gray-400 mt-2")
+                    ui.label("Memory optimization for large datasets").classes("text-xs text-gray-500 mb-2")
+
+                    # Out-of-core toggle
+                    with ui.row().classes("w-full items-center gap-2"):
+                        ui.icon("storage").classes("text-gray-400 text-sm")
+                        ui.label("Out-of-core mode").classes("flex-grow text-sm")
+                        ooc_switch = ui.switch(value=state.out_of_core).props("dense")
+
+                    ui.label("Caches data to disk, reducing RAM usage").classes("text-xs text-gray-500 ml-6")
+
+                    # Cache status
+                    def get_cache_status():
+                        if state.out_of_core:
+                            size = state.get_cache_size_mb()
+                            return f"Cache: {size:.1f} MB"
+                        return "Cache: inactive"
+
+                    cache_label = ui.label(get_cache_status()).classes("text-xs text-gray-400 ml-6")
+
+                    def on_ooc_change():
+                        # Read current switch value
+                        if ooc_switch.value:
+                            cache_label.set_text("Cache: will activate on apply")
+                        else:
+                            cache_label.set_text("Cache: inactive")
+
+                    ooc_switch.on_value_change(on_ooc_change)
+
                     with ui.row().classes("w-full justify-end gap-2 mt-4"):
 
                         def apply_settings():
@@ -378,6 +436,22 @@ async def create_ui():
                                         state.panel_elements[panel_id].move(target_index=idx)
                             # Apply visibility
                             state.update_panel_visibility()
+
+                            # Apply out-of-core setting - read directly from switch widget
+                            new_ooc = ooc_switch.value
+                            if new_ooc != state.out_of_core:
+                                state.init_data_manager(out_of_core=new_ooc)
+                                mode_str = "enabled" if new_ooc else "disabled"
+
+                                if state.current_file:
+                                    # Data already loaded - inform user to reload
+                                    ui.notify(
+                                        f"Out-of-core mode {mode_str}. Re-upload your file to apply.",
+                                        type="warning",
+                                    )
+                                else:
+                                    ui.notify(f"Out-of-core mode {mode_str}.", type="info")
+
                             dialog.close()
                             ui.notify("Panel settings updated", type="positive")
 
@@ -522,19 +596,29 @@ async def create_ui():
                         ui.label("Ion Annotations").classes("font-bold text-lg mb-2")
                         with ui.column().classes("gap-1"):
                             with ui.row().classes("items-center gap-2"):
-                                ui.html('<div style="width:14px;height:14px;background:#1f77b4;"></div>', sanitize=False)
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#1f77b4;"></div>', sanitize=False
+                                )
                                 ui.label("b-ions").classes("text-sm")
                             with ui.row().classes("items-center gap-2"):
-                                ui.html('<div style="width:14px;height:14px;background:#d62728;"></div>', sanitize=False)
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#d62728;"></div>', sanitize=False
+                                )
                                 ui.label("y-ions").classes("text-sm")
                             with ui.row().classes("items-center gap-2"):
-                                ui.html('<div style="width:14px;height:14px;background:#2ca02c;"></div>', sanitize=False)
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#2ca02c;"></div>', sanitize=False
+                                )
                                 ui.label("a-ions").classes("text-sm")
                             with ui.row().classes("items-center gap-2"):
-                                ui.html('<div style="width:14px;height:14px;background:#ff7f0e;"></div>', sanitize=False)
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#ff7f0e;"></div>', sanitize=False
+                                )
                                 ui.label("Precursor").classes("text-sm")
                             with ui.row().classes("items-center gap-2"):
-                                ui.html('<div style="width:14px;height:14px;background:#7f7f7f;"></div>', sanitize=False)
+                                ui.html(
+                                    '<div style="width:14px;height:14px;background:#7f7f7f;"></div>', sanitize=False
+                                )
                                 ui.label("Unmatched").classes("text-sm")
 
                     # File Types
@@ -576,11 +660,14 @@ async def create_ui():
                 state.reset_view()
             elif e.key in ["Delete", "Backspace"]:
                 # Delete selected measurement in spectrum browser
-                if hasattr(state, 'spectrum_selected_measurement_idx') and state.spectrum_selected_measurement_idx is not None:
+                if (
+                    hasattr(state, "spectrum_selected_measurement_idx")
+                    and state.spectrum_selected_measurement_idx is not None
+                ):
                     state.delete_selected_measurement()
             elif str(e.key).lower() == "g":
                 # Open go-to range dialog
-                if hasattr(state, 'peak_map_panel') and state.peak_map_panel:
+                if hasattr(state, "peak_map_panel") and state.peak_map_panel:
                     state.peak_map_panel._open_range_popover()
 
         ui.keyboard(on_key=on_global_key)
@@ -588,6 +675,7 @@ async def create_ui():
     # Load CLI files after UI is ready
     async def load_cli_files():
         from pyopenms_viewer.cli import get_cli_files
+
         cli_files = get_cli_files()
 
         if cli_files["mzml"]:

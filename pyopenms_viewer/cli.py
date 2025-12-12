@@ -18,13 +18,19 @@ if sys.stderr is None:
 # Set OpenMP threads for pyOpenMS
 os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count()))
 
-# Global for CLI files (loaded after UI starts)
+# Global for CLI files and options (loaded after UI starts)
 _cli_files = {"mzml": None, "featurexml": None, "idxml": None}
+_cli_options = {"out_of_core": False, "cache_dir": None}
 
 
 def get_cli_files() -> dict:
     """Get CLI files to load on startup."""
     return _cli_files
+
+
+def get_cli_options() -> dict:
+    """Get CLI options for application configuration."""
+    return _cli_options
 
 
 @click.command()
@@ -34,7 +40,18 @@ def get_cli_files() -> dict:
 @click.option("--open/--no-open", "-o/-n", default=True, help="Open browser automatically")
 @click.option("--native", is_flag=True, default=False, help="Run in native window mode")
 @click.option("--dark/--light", default=True, help="Use dark mode (default) or light mode")
-def main(files, port, host, open, native, dark):
+@click.option(
+    "--out-of-core/--in-memory",
+    default=False,
+    help="Use disk-based caching for large datasets (reduces RAM usage)",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory for cache files (default: temp directory)",
+)
+def main(files, port, host, open, native, dark, out_of_core, cache_dir):
     """pyopenms-viewer - Fast visualization of mass spectrometry data.
 
     Load mzML, featureXML, and idXML files for visualization.
@@ -46,7 +63,11 @@ def main(files, port, host, open, native, dark):
         pyopenms-viewer sample.mzML features.featureXML  # Load with features
         pyopenms-viewer sample.mzML ids.idXML        # Load with IDs
     """
-    global _cli_files
+    global _cli_files, _cli_options
+
+    # Store CLI options for app initialization
+    _cli_options["out_of_core"] = out_of_core
+    _cli_options["cache_dir"] = cache_dir
 
     # Parse file arguments by extension
     for filepath in files:

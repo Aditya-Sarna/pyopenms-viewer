@@ -101,6 +101,11 @@ class DEFAULTS:
     # Zoom history
     MAX_ZOOM_HISTORY = 10
 
+    # Out-of-core settings
+    OUT_OF_CORE = False  # Enable disk-based caching
+    CACHE_DIR = None  # Cache directory (None = temp dir)
+    CACHE_COMPRESSION = "snappy"  # Compression: snappy, zstd, gzip, none
+
     # Colors (RGBA tuples)
     CENTROID_COLOR = (0, 255, 100, 255)
     HOVER_COLOR = (255, 200, 0, 255)  # Orange/yellow for hover highlight

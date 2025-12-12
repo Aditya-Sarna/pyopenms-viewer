@@ -9,7 +9,8 @@ Components access data via properties that return references or views (masks).
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,9 @@ from pyopenms_viewer.core.config import (
     PANEL_DEFINITIONS,
 )
 from pyopenms_viewer.core.events import EventBus
+
+if TYPE_CHECKING:
+    from pyopenms_viewer.core.data_manager import DataManager
 
 
 @dataclass
@@ -75,8 +79,14 @@ class ViewerState:
     """
 
     def __init__(self):
+        # ========== DATA MANAGER (unified DuckDB interface) ==========
+        self.data_manager: Optional["DataManager"] = None
+        self.out_of_core: bool = DEFAULTS.OUT_OF_CORE
+        self._cache_dir: Optional[Path] = None
+
         # ========== PRIMARY DATA (NEVER COPIED) ==========
         # These are the large data structures that must be shared
+        # In out-of-core mode, df and im_df may be None after registration
         self.exp = None  # MSExperiment - pyOpenMS C++ object (~500MB)
         self.df: Optional[pd.DataFrame] = None  # All peaks: rt, mz, intensity, log_intensity (~2GB)
         self.im_df: Optional[pd.DataFrame] = None  # Ion mobility peaks: mz, im, intensity, log_intensity
@@ -236,23 +246,85 @@ class ViewerState:
         """Total canvas height including margins."""
         return self.plot_height + self.margin_top + self.margin_bottom
 
+    # ========== DATA MANAGER METHODS ==========
+
+    def init_data_manager(
+        self,
+        out_of_core: bool = False,
+        cache_dir: Optional[Path] = None,
+    ) -> None:
+        """Initialize the data manager for unified DuckDB queries.
+
+        This should be called early in application startup, before loading data.
+
+        Args:
+            out_of_core: If True, cache data to Parquet files on disk.
+                        If False, register DataFrames directly with DuckDB.
+            cache_dir: Directory for cache files. If None, uses a temp directory.
+        """
+        from pyopenms_viewer.core.data_manager import DataManager
+
+        self.out_of_core = out_of_core
+        self._cache_dir = Path(cache_dir) if cache_dir else None
+
+        # Clean up existing data manager if present
+        if self.data_manager is not None:
+            self.data_manager.cleanup()
+
+        self.data_manager = DataManager(
+            out_of_core=out_of_core,
+            cache_dir=self._cache_dir,
+            compression=DEFAULTS.CACHE_COMPRESSION,
+        )
+
+    def get_cache_size_mb(self) -> float:
+        """Get current cache size in megabytes.
+
+        Returns:
+            Cache size in MB, or 0 if not in out-of-core mode
+        """
+        if self.data_manager is None:
+            return 0.0
+        return self.data_manager.get_cache_size_mb()
+
     # ========== VIEW ACCESSORS (return views, not copies) ==========
 
     def get_peaks_in_view(self) -> pd.DataFrame:
-        """Return a VIEW (boolean mask) of peaks in current view bounds.
+        """Return peaks in current view bounds.
 
-        This returns a pandas view, not a copy, so it's memory-efficient.
+        This method provides unified access to peak data regardless of storage mode:
+
+        IN-MEMORY MODE (data_manager with out_of_core=False):
+            Queries via DuckDB with zero-copy DataFrame registration.
+            Performance: ~49ms for 5M peaks (slightly slower than direct pandas).
+
+        OUT-OF-CORE MODE (data_manager with out_of_core=True):
+            Queries via DuckDB reading from Parquet files on disk.
+            Performance: ~74ms for 5M peaks. Enables datasets larger than RAM.
+
+        LEGACY MODE (no data_manager):
+            Falls back to direct pandas boolean masking.
+            Performance: ~22ms for 5M peaks (fastest).
+
+        Note: For rendering hot paths, prefer checking state.df directly and using
+        pandas masking when available (see PeakMapRenderer for example).
 
         Returns:
-            DataFrame view of peaks within current RT/m/z bounds
+            DataFrame of peaks within current RT/m/z bounds
         """
-        if self.df is None:
-            return pd.DataFrame()
-
         rt_min = self.view_rt_min if self.view_rt_min is not None else self.rt_min
         rt_max = self.view_rt_max if self.view_rt_max is not None else self.rt_max
         mz_min = self.view_mz_min if self.view_mz_min is not None else self.mz_min
         mz_max = self.view_mz_max if self.view_mz_max is not None else self.mz_max
+
+        # Use data manager if available (unified DuckDB interface)
+        if self.data_manager is not None:
+            cv = self.selected_faims_cv if self.has_faims else None
+            return self.data_manager.query_peaks_in_view(rt_min, rt_max, mz_min, mz_max, cv)
+
+        # Fallback: direct pandas filtering
+        if self.df is None:
+            return pd.DataFrame()
 
         mask = (
             (self.df["rt"] >= rt_min)
@@ -263,18 +335,32 @@ class ViewerState:
         return self.df[mask]
 
     def get_im_peaks_in_view(self) -> pd.DataFrame:
-        """Return a VIEW of IM peaks in current view bounds.
+        """Return ion mobility peaks in current view bounds.
+
+        This method provides unified access to IM peak data regardless of storage mode:
+
+        IN-MEMORY MODE: Queries via DuckDB with zero-copy DataFrame registration.
+        OUT-OF-CORE MODE: Queries via DuckDB reading from Parquet files on disk.
+        LEGACY MODE: Falls back to direct pandas boolean masking.
+
+        Note: For rendering hot paths, prefer checking state.im_df directly and using
+        pandas masking when available (see IMPeakMapRenderer for example).
 
         Returns:
-            DataFrame view of ion mobility peaks within current m/z/IM bounds
+            DataFrame of ion mobility peaks within current m/z/IM bounds
         """
-        if self.im_df is None:
-            return pd.DataFrame()
-
         mz_min = self.view_mz_min if self.view_mz_min is not None else self.mz_min
         mz_max = self.view_mz_max if self.view_mz_max is not None else self.mz_max
         im_min = self.view_im_min if self.view_im_min is not None else self.im_min
         im_max = self.view_im_max if self.view_im_max is not None else self.im_max
+
+        # Use data manager if available (unified DuckDB interface)
+        if self.data_manager is not None:
+            return self.data_manager.query_im_peaks_in_view(mz_min, mz_max, im_min, im_max)
+
+        # Fallback: direct pandas filtering
+        if self.im_df is None:
+            return pd.DataFrame()
 
         mask = (
             (self.im_df["mz"] >= mz_min)
@@ -480,6 +566,10 @@ class ViewerState:
 
     def clear_mzml_data(self) -> None:
         """Clear all mzML-related data."""
+        # Clear data manager cache
+        if self.data_manager is not None:
+            self.data_manager.clear()
+
         self.exp = None
         self.df = None
         self.current_file = None
@@ -600,7 +690,7 @@ class ViewerState:
 
         # Limit history size
         if len(self.zoom_history) > self.max_zoom_history:
-            self.zoom_history = self.zoom_history[-self.max_zoom_history:]
+            self.zoom_history = self.zoom_history[-self.max_zoom_history :]
 
     def go_to_zoom_history(self, index: int, emit_event: bool = False) -> None:
         """Jump to a specific point in zoom history.
@@ -616,18 +706,12 @@ class ViewerState:
         self.view_rt_min, self.view_rt_max, self.view_mz_min, self.view_mz_max, _ = state
 
         # Truncate history to this point (forward history is lost)
-        self.zoom_history = self.zoom_history[:index + 1]
+        self.zoom_history = self.zoom_history[: index + 1]
 
         if emit_event:
             self.emit_view_changed()
 
-    def zoom_at_point(
-        self,
-        x_frac: float,
-        y_frac: float,
-        zoom_in: bool = True,
-        emit_event: bool = False
-    ) -> None:
+    def zoom_at_point(self, x_frac: float, y_frac: float, zoom_in: bool = True, emit_event: bool = False) -> None:
         """Zoom centered on a specific point (given as fraction of plot area).
 
         Args:
@@ -683,12 +767,7 @@ class ViewerState:
         if emit_event:
             self.emit_view_changed()
 
-    def minimap_click_to_view(
-        self,
-        x_frac: float,
-        y_frac: float,
-        emit_event: bool = False
-    ) -> None:
+    def minimap_click_to_view(self, x_frac: float, y_frac: float, emit_event: bool = False) -> None:
         """Center the main view on the clicked position in minimap.
 
         Args:
@@ -863,7 +942,7 @@ class ViewerState:
             if panel_id == "legend":
                 continue  # Help panel is always visible
             visible = self.should_panel_be_visible(panel_id)
-            if hasattr(element, 'set_visibility'):
+            if hasattr(element, "set_visibility"):
                 element.set_visibility(visible)
 
     # ========== FAIMS ==========

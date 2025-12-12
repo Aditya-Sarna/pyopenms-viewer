@@ -138,6 +138,7 @@ class PeakMapPanel(BasePanel):
         # Subscribe to events
         self.state.on_data_loaded(self._on_data_loaded)
         self.state.on_view_changed(self._on_view_changed)
+        self.state.on_selection_changed(self._on_selection_changed)
 
         self._is_built = True
         return self.expansion
@@ -293,7 +294,7 @@ class PeakMapPanel(BasePanel):
 
     def _open_range_popover(self):
         """Open the range input popover and populate with current values."""
-        if self.state.df is None:
+        if not self._has_data():
             ui.notify("No data loaded", type="warning")
             return
 
@@ -468,7 +469,7 @@ class PeakMapPanel(BasePanel):
 
     def update(self) -> None:
         """Update the peak map display."""
-        if self.state.df is None or self.image_element is None:
+        if not self._has_data() or self.image_element is None:
             return
 
         # Render peak map
@@ -484,7 +485,7 @@ class PeakMapPanel(BasePanel):
 
     def update_minimap(self) -> None:
         """Update the minimap display."""
-        if self.state.df is None or self.minimap_image is None:
+        if not self._has_data() or self.minimap_image is None:
             return
 
         base64_img = self.minimap_renderer.render(self.state)
@@ -493,7 +494,7 @@ class PeakMapPanel(BasePanel):
 
     def update_lightweight(self) -> None:
         """Update with faster rendering (for panning)."""
-        if self.state.df is None or self.image_element is None:
+        if not self._has_data() or self.image_element is None:
             return
 
         base64_img = self.peak_map_renderer.render(self.state, fast=True)
@@ -501,8 +502,17 @@ class PeakMapPanel(BasePanel):
             self.image_element.set_source(f"data:image/png;base64,{base64_img}")
 
     def _has_data(self) -> bool:
-        """Check if panel has data to display."""
-        return self.state.df is not None
+        """Check if panel has data to display.
+
+        Works for both in-memory mode (state.df is not None) and
+        out-of-core mode (state.df is None but data_manager has data).
+        """
+        if self.state.df is not None:
+            return True
+        # Out-of-core mode: check data_manager
+        if self.state.data_manager is not None:
+            return self.state.data_manager.get_peak_count() > 0
+        return False
 
     # === Event handlers ===
 
@@ -523,49 +533,55 @@ class PeakMapPanel(BasePanel):
         """Handle view changed event."""
         self.update()
 
+    def _on_selection_changed(self, selection_type: str, index):
+        """Handle selection changed event - redraw spectrum marker."""
+        if selection_type == "spectrum" and self.state.show_spectrum_marker:
+            # Redraw to update the spectrum marker position
+            self.update()
+
     # === Toggle handlers ===
 
     def _toggle_centroids(self):
         """Toggle centroid overlay."""
         self.state.show_centroids = self.centroid_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _toggle_bboxes(self):
         """Toggle bounding box overlay."""
         self.state.show_bounding_boxes = self.bbox_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _toggle_hulls(self):
         """Toggle convex hull overlay."""
         self.state.show_convex_hulls = self.hull_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _toggle_ids(self):
         """Toggle ID overlay."""
         self.state.show_ids = self.ids_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _toggle_id_sequences(self):
         """Toggle ID sequence labels."""
         self.state.show_id_sequences = self.id_seq_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _change_colormap(self, e):
         """Change colormap."""
         self.state.colormap = e.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
             self.update_minimap()
 
     def _toggle_rt_unit(self, e):
         """Toggle RT unit between seconds and minutes."""
         self.state.rt_in_minutes = e.value == "min"
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
             self.update_minimap()
             # Notify other panels
@@ -574,13 +590,13 @@ class PeakMapPanel(BasePanel):
     def _toggle_swap_axes(self):
         """Toggle axis swap."""
         self.state.swap_axes = self.swap_axes_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _toggle_spectrum_marker(self):
         """Toggle spectrum position marker."""
         self.state.show_spectrum_marker = self.spectrum_marker_cb.value
-        if self.state.df is not None:
+        if self._has_data():
             self.update()
 
     def _save_png(self):
@@ -1188,7 +1204,7 @@ class PeakMapPanel(BasePanel):
         if self.scene_3d_container:
             self.scene_3d_container.set_visibility(self.state.show_3d_view)
 
-        if self.state.show_3d_view and self.state.df is not None:
+        if self.state.show_3d_view and self._has_data():
             self._update_3d_view()
 
         # Update button appearance
@@ -1200,7 +1216,7 @@ class PeakMapPanel(BasePanel):
 
     def _update_3d_view(self):
         """Update the 3D visualization with current view data using pyopenms-viz."""
-        if not self.state.show_3d_view or self.plot_3d is None or self.state.df is None:
+        if not self.state.show_3d_view or self.plot_3d is None or not self._has_data():
             return
 
         # Check if region is small enough
