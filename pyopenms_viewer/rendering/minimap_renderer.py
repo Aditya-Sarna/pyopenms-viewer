@@ -200,10 +200,15 @@ class MinimapRenderer:
         Returns:
             Base64-encoded PNG string, or None if no data for this CV
         """
-        if not state.has_faims or cv not in state.faims_data:
+        if not state.has_faims:
             return None
 
-        cv_df = state.faims_data.get(cv)
+        # Get CV data - use data_manager in out-of-core mode, faims_data in-memory
+        if state.data_manager is not None:
+            cv_df = state.data_manager.query_peaks_for_cv(cv, downsample=state.peakmap_downsampling)
+        else:
+            cv_df = state.faims_data.get(cv)
+
         if cv_df is None or len(cv_df) == 0:
             return None
 

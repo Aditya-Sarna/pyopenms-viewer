@@ -315,6 +315,69 @@ class DataManager:
         else:
             return self._df
 
+    def query_peaks_for_cv(
+        self, cv: float, downsample: bool = True, minimap_pixels: int = 80000
+    ) -> pd.DataFrame | None:
+        """Query peaks for a specific FAIMS CV value.
+
+        Args:
+            cv: Compensation voltage value to filter by
+            downsample: Whether to apply adaptive downsampling
+            minimap_pixels: Target number of points for downsampling (if enabled)
+
+        Returns:
+            DataFrame with peaks for the specified CV, or None if no data
+        """
+        if not self._peaks_registered:
+            return None
+
+        if self.out_of_core:
+            if not downsample:
+                # No downsampling - return all peaks for this CV
+                return self.conn.execute("""
+                    SELECT rt, mz, log_intensity FROM peaks WHERE cv = ?
+                """, [cv]).fetchdf()
+
+            # Get count for this CV
+            total = self.conn.execute(
+                "SELECT COUNT(*) FROM peaks WHERE cv = ?", [cv]
+            ).fetchone()[0]
+
+            if total == 0:
+                return pd.DataFrame()
+
+            if total <= minimap_pixels:
+                return self.conn.execute("""
+                    SELECT rt, mz, log_intensity FROM peaks WHERE cv = ?
+                """, [cv]).fetchdf()
+            else:
+                sample_rate = max(1, total // minimap_pixels)
+                return self.conn.execute(f"""
+                    SELECT rt, mz, log_intensity
+                    FROM (
+                        SELECT rt, mz, log_intensity,
+                               ROW_NUMBER() OVER () as rn
+                        FROM peaks
+                        WHERE cv = ?
+                    )
+                    WHERE rn % {sample_rate} = 0
+                """, [cv]).fetchdf()
+        else:
+            # In-memory mode - filter DataFrame
+            if self._df is None:
+                return None
+            cv_df = self._df[self._df["cv"] == cv]
+
+            if not downsample:
+                return cv_df[["rt", "mz", "log_intensity"]]
+
+            total = len(cv_df)
+            if total <= minimap_pixels:
+                return cv_df[["rt", "mz", "log_intensity"]]
+            else:
+                sample_rate = max(1, total // minimap_pixels)
+                return cv_df.iloc[::sample_rate][["rt", "mz", "log_intensity"]]
+
     def get_bounds(self) -> dict[str, float]:
         """Get data bounds without loading all data.
 

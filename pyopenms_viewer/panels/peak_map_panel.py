@@ -492,6 +492,10 @@ class PeakMapPanel(BasePanel):
         if base64_img:
             self.minimap_image.set_source(f"data:image/png;base64,{base64_img}")
 
+        # Also update FAIMS CV minimaps if present
+        if self.state.has_faims:
+            self._update_faims_cv_minimaps()
+
     def update_lightweight(self) -> None:
         """Update with faster rendering (for panning)."""
         if not self._has_data() or self.image_element is None:
