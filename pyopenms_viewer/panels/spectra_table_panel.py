@@ -300,10 +300,18 @@ class SpectraTablePanel(BasePanel):
             # Rebuild columns when mzML loaded (CV column depends on has_faims)
             if data_type == "mzml" and self.spectrum_table is not None:
                 self.spectrum_table.columns = self._build_columns()
-            self.update()
-            # Auto-expand when data is loaded
-            if data_type == "mzml" and self.expansion and self._has_data():
-                self.expansion.value = True
+            if self._has_data():
+                self.update()
+                # Auto-expand when data is loaded
+                if data_type == "mzml" and self.expansion:
+                    self.expansion.value = True
+            else:
+                # Clear table when data is removed
+                if self.spectrum_table is not None:
+                    self.spectrum_table.rows = []
+                    self.spectrum_table.update()
+                if self.expansion:
+                    self.expansion.value = False
 
     def _on_table_select(self, e):
         """Handle row selection in table."""

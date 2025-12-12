@@ -519,15 +519,30 @@ class PeakMapPanel(BasePanel):
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
         if data_type == "mzml":
-            self.update()
-            # Auto-expand panel when data loaded
-            if self.expansion:
-                self.expansion.value = True
+            if self._has_data():
+                self.update()
+                # Auto-expand panel when data loaded
+                if self.expansion:
+                    self.expansion.value = True
+            else:
+                # Clear display when data is removed
+                self._clear_display()
+                if self.expansion:
+                    self.expansion.value = False
             # Show/hide FAIMS checkbox based on data
             if self.faims_checkbox:
                 self.faims_checkbox.set_visibility(self.state.has_faims)
                 if self.state.has_faims:
                     self._create_faims_cv_minimaps()
+
+    def _clear_display(self):
+        """Clear the peak map display."""
+        if self.image_element is not None:
+            self.image_element.set_source("")
+        if self.minimap_image is not None:
+            self.minimap_image.set_source("")
+        if self.breadcrumb_label is not None:
+            self.breadcrumb_label.set_text("")
 
     def _on_view_changed(self):
         """Handle view changed event."""

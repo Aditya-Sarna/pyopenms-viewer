@@ -257,6 +257,7 @@ async def create_ui():
             def clear_features():
                 state.clear_features()
                 state.emit_data_loaded("features")  # Trigger UI updates
+                state.update_panel_visibility()
                 state.emit_view_changed()
                 if feature_info_label:
                     feature_info_label.set_text("")
@@ -264,19 +265,37 @@ async def create_ui():
             def clear_ids():
                 state.clear_ids()
                 state.emit_data_loaded("ids")  # Trigger UI updates (spectra table, etc.)
+                state.update_panel_visibility()
                 state.emit_view_changed()
                 if id_info_label:
                     id_info_label.set_text("")
+
+            def clear_mzml():
+                state.clear_mzml_data()
+                state.emit_data_loaded("mzml")  # Trigger UI updates
+                state.update_panel_visibility()
+                state.emit_view_changed()
+                if info_label:
+                    info_label.set_text("No file loaded")
 
             def clear_all():
                 state.clear_all()
                 if info_label:
                     info_label.set_text("No file loaded")
-                clear_features()
-                clear_ids()
+                if feature_info_label:
+                    feature_info_label.set_text("")
+                if id_info_label:
+                    id_info_label.set_text("")
+                # Emit events to update all panels
+                state.emit_data_loaded("mzml")
+                state.emit_data_loaded("features")
+                state.emit_data_loaded("ids")
+                state.update_panel_visibility()
+                state.emit_view_changed()
 
             with ui.button(icon="delete_outline").props("flat dense size=sm").tooltip("Clear data"):
                 with ui.menu().props("auto-close"):
+                    ui.menu_item("Clear mzML", on_click=clear_mzml).classes("text-blue-400")
                     ui.menu_item("Clear Features", on_click=clear_features).classes("text-cyan-400")
                     ui.menu_item("Clear IDs", on_click=clear_ids).classes("text-orange-400")
                     ui.separator()

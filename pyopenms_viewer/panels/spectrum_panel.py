@@ -961,16 +961,36 @@ class SpectrumPanel(BasePanel):
 
     def _on_data_loaded(self, data_type: str):
         """Handle data loaded event."""
-        if data_type == "mzml" and self._has_data():
-            # Show first spectrum
-            self.show_spectrum(0)
-            # Auto-expand panel
-            if self.expansion:
-                self.expansion.value = True
+        if data_type == "mzml":
+            if self._has_data():
+                # Show first spectrum
+                self.show_spectrum(0)
+                # Auto-expand panel
+                if self.expansion:
+                    self.expansion.value = True
+            else:
+                # Clear display when data is removed
+                self._clear_display()
+                if self.expansion:
+                    self.expansion.value = False
         elif data_type == "ids":
             # Refresh current spectrum to update annotations
             if self.state.selected_spectrum_idx is not None:
                 self.show_spectrum(self.state.selected_spectrum_idx)
+
+    def _clear_display(self):
+        """Clear the spectrum display."""
+        if self.spectrum_plot is not None:
+            empty_fig = go.Figure()
+            empty_fig.update_layout(
+                xaxis_title="m/z",
+                yaxis_title="Intensity",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            self.spectrum_plot.update_figure(self._figure_with_config(empty_fig))
+        if self.info_label is not None:
+            self.info_label.set_text("No spectrum loaded")
 
     def _on_selection_changed(self, selection_type: str, index: Optional[int]):
         """Handle selection changed event."""

@@ -151,10 +151,28 @@ class TICPanel(BasePanel):
 
     def _on_data_loaded(self, data_type: str) -> None:
         if data_type == "mzml":
-            self.update()
-            # Auto-expand when data is loaded
-            if self.expansion and self._has_data():
-                self.expansion.value = True
+            if self._has_data():
+                self.update()
+                # Auto-expand when data is loaded
+                if self.expansion:
+                    self.expansion.value = True
+            else:
+                # Clear display when data is removed
+                self._clear_display()
+                if self.expansion:
+                    self.expansion.value = False
+
+    def _clear_display(self) -> None:
+        """Clear the TIC display."""
+        if self.plot is not None:
+            empty_fig = go.Figure()
+            empty_fig.update_layout(
+                xaxis_title="RT",
+                yaxis_title="Intensity",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            self.plot.update_figure(empty_fig)
 
     def _on_view_changed(self) -> None:
         if not self._updating_from_tic:
