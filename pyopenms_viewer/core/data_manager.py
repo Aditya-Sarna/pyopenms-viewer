@@ -241,11 +241,15 @@ class DataManager:
         """
         return self.conn.execute(query, [mz_min, mz_max, im_min, im_max]).fetchdf()
 
-    def query_peaks_for_minimap(self, sample_rate: int = 100) -> pd.DataFrame | None:
-        """Query downsampled peaks for minimap rendering.
+    def query_peaks_for_minimap(self, minimap_pixels: int = 80000) -> pd.DataFrame | None:
+        """Query peaks for minimap rendering with adaptive downsampling.
+
+        Downsampling is adaptive based on data size vs minimap resolution.
+        For a 400x200 minimap (80k pixels), we want roughly that many points
+        for good visual quality.
 
         Args:
-            sample_rate: Sample every Nth row (only used in out-of-core mode)
+            minimap_pixels: Target number of points (default: 400*200 = 80000)
 
         Returns:
             DataFrame with peaks for minimap, or None if no data
@@ -254,18 +258,28 @@ class DataManager:
             return None
 
         if self.out_of_core:
-            # Sample every Nth row for out-of-core using row_number
-            return self.conn.execute(f"""
-                SELECT rt, mz, log_intensity
-                FROM (
-                    SELECT rt, mz, log_intensity,
-                           ROW_NUMBER() OVER () as rn
-                    FROM peaks
-                )
-                WHERE rn % {sample_rate} = 0
-            """).fetchdf()
+            # Get total count to determine sample rate
+            total = self.conn.execute("SELECT COUNT(*) FROM peaks").fetchone()[0]
+
+            if total <= minimap_pixels:
+                # Small dataset - return all
+                return self.conn.execute("""
+                    SELECT rt, mz, log_intensity FROM peaks
+                """).fetchdf()
+            else:
+                # Adaptive downsampling: sample_rate = total / target_points
+                sample_rate = max(1, total // minimap_pixels)
+                return self.conn.execute(f"""
+                    SELECT rt, mz, log_intensity
+                    FROM (
+                        SELECT rt, mz, log_intensity,
+                               ROW_NUMBER() OVER () as rn
+                        FROM peaks
+                    )
+                    WHERE rn % {sample_rate} = 0
+                """).fetchdf()
         else:
-            # In-memory: return full DataFrame (minimap uses datashader anyway)
+            # In-memory: return full DataFrame
             return self._df
 
     def get_bounds(self) -> dict[str, float]:
