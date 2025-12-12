@@ -138,6 +138,15 @@ class PeakMapRenderer:
         render_width = self.plot_width // resolution_factor
         render_height = self.plot_height // resolution_factor
 
+        # Adaptive downsampling for very large views (>2M peaks).
+        # Uses stride sampling which is fast and preserves RT distribution since
+        # MS data is sorted by RT. Target ~3 points per pixel for good visual quality.
+        if state.peakmap_downsampling:
+            target_points = render_width * render_height * 3
+            if len(view_df) > target_points:
+                sample_rate = len(view_df) // target_points
+                view_df = view_df.iloc[::sample_rate]
+
         if state.swap_axes:
             # m/z on x-axis, RT on y-axis
             ds_canvas = ds.Canvas(
