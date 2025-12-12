@@ -909,7 +909,7 @@ class ViewerState:
         if self.exp is None or not self.peptide_ids:
             return None
 
-        if spectrum_idx < 0 or spectrum_idx >= self.exp.size():
+        if spectrum_idx < 0 or spectrum_idx >= len(self.exp):
             return None
 
         spec = self.exp[spectrum_idx]
@@ -970,7 +970,7 @@ class ViewerState:
         best_spec_idx = None
         best_rt_diff = float("inf")
 
-        for i in range(self.exp.size()):
+        for i in range(len(self.exp)):
             spec = self.exp[i]
             if spec.getMSLevel() != 2:
                 continue

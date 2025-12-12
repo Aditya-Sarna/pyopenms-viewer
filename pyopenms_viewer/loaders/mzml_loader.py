@@ -35,8 +35,8 @@ def get_cv_from_spectrum(spec) -> Optional[float]:
     Returns:
         Compensation voltage value, or None if not found
 
-    TODO: pyOpenMS 3.5+ may expose FAIMSHelper.getCompensationVoltages() which
-    would provide a cleaner API for FAIMS CV extraction at the experiment level.
+    Note: pyOpenMS 3.5 includes performance improvements (7-25% faster mzML loading
+    via SIMD ASCII conversion, 20-40% faster ion mobility data loading).
     """
     # Primary method: use DriftTimeUnit (most reliable for properly annotated mzML)
     try:
@@ -126,8 +126,8 @@ class MzMLLoader:
             print(f"Reading {filename} with MzMLFile (this may take a while)...")
             self.state.exp = MSExperiment()
             MzMLFile().load(filepath, self.state.exp)
-            print(f"Loaded {self.state.exp.size()} spectra from {filename}")
-            return self.state.exp.size() > 0
+            print(f"Loaded {len(self.state.exp)} spectra from {filename}")
+            return len(self.state.exp) > 0
         except Exception as e:
             print(f"Error parsing mzML: {e}")
             return False
@@ -153,7 +153,7 @@ class MzMLLoader:
             if self.state.exp is None:
                 return False
 
-            total_peaks = sum(spec.size() for spec in self.state.exp)
+            total_peaks = sum(len(spec) for spec in self.state.exp)
 
             if total_peaks == 0:
                 return False

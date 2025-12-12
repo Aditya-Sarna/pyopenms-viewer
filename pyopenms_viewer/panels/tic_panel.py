@@ -181,7 +181,7 @@ class TICPanel(BasePanel):
         if self.state.exp is not None:
             best_idx = 0
             best_diff = float("inf")
-            for i in range(self.state.exp.size()):
+            for i in range(len(self.state.exp)):
                 diff = abs(self.state.exp[i].getRT() - clicked_rt)
                 if diff < best_diff:
                     best_diff = diff

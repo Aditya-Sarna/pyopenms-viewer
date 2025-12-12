@@ -24,11 +24,11 @@ def extract_spectrum_data(state: ViewerState) -> list[dict[str, Any]]:
         return []
 
     data = []
-    for idx in range(state.exp.size()):
+    for idx in range(len(state.exp)):
         spec = state.exp[idx]
         rt = spec.getRT()
         ms_level = spec.getMSLevel()
-        n_peaks = spec.size()
+        n_peaks = len(spec)
 
         # Get peaks for TIC and BPI calculation
         mz_array, int_array = spec.get_peaks()
