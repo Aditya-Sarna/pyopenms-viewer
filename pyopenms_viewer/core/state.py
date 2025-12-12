@@ -180,7 +180,6 @@ class ViewerState:
         self.rt_in_minutes: bool = DEFAULTS.RT_IN_MINUTES
         self.spectrum_intensity_percent: bool = DEFAULTS.SPECTRUM_INTENSITY_PERCENT
         self.spectrum_auto_scale: bool = DEFAULTS.SPECTRUM_AUTO_SCALE
-        self.spectrum_downsampling: bool = DEFAULTS.SPECTRUM_DOWNSAMPLING
         self.peakmap_downsampling: bool = DEFAULTS.PEAKMAP_DOWNSAMPLING
         self.annotate_peaks: bool = DEFAULTS.ANNOTATE_PEAKS
         self.annotation_tolerance_da: float = DEFAULTS.ANNOTATION_TOLERANCE_DA

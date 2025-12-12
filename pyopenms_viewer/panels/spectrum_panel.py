@@ -212,16 +212,6 @@ class SpectrumPanel(BasePanel):
                 "Auto-scale Y-axis to fit visible peaks (highest peak at 95%)"
             )
 
-            # Downsampling checkbox
-            ui.checkbox(
-                "Downsample",
-                value=self.state.spectrum_downsampling,
-                on_change=self._toggle_downsampling,
-            ).props("dense size=sm color=grey").classes("text-xs").tooltip(
-                f"Downsample spectrum to max {self.MAX_DISPLAY_PEAKS:,} peaks for performance"
-            )
-
-            ui.label("|").classes("mx-1 text-gray-600")
 
             # Measurement mode toggle
             self.measure_btn = ui.button(
@@ -398,7 +388,7 @@ class SpectrumPanel(BasePanel):
             visible_peaks = total_peaks
 
         # Downsample for display if too many peaks (and downsampling is enabled)
-        if self.state.spectrum_downsampling:
+        if self.state.peakmap_downsampling:
             mz_display, int_display_raw, _ = self._downsample_spectrum(mz_visible, int_visible)
             is_downsampled = len(mz_display) < visible_peaks
         else:
@@ -1307,7 +1297,7 @@ class SpectrumPanel(BasePanel):
             if xmin is not None and xmax is not None:
                 self.state.spectrum_zoom_range = (xmin, xmax)
                 # Re-render to apply auto-scale, re-downsample, or update m/z labels for visible range
-                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling or self.state.show_mz_labels) and self.state.selected_spectrum_idx is not None:
+                if (self.state.spectrum_auto_scale or self.state.peakmap_downsampling or self.state.show_mz_labels) and self.state.selected_spectrum_idx is not None:
                     self.show_spectrum(self.state.selected_spectrum_idx)
                 # Sync m/z range to IM peakmap if linking is enabled
                 if self.state.link_spectrum_mz_to_im and self.state.has_ion_mobility:
@@ -1317,7 +1307,7 @@ class SpectrumPanel(BasePanel):
             elif e.args.get("xaxis.autorange"):
                 self.state.spectrum_zoom_range = None
                 # Re-render to reset y-axis, re-downsample full spectrum, or update m/z labels
-                if (self.state.spectrum_auto_scale or self.state.spectrum_downsampling or self.state.show_mz_labels) and self.state.selected_spectrum_idx is not None:
+                if (self.state.spectrum_auto_scale or self.state.peakmap_downsampling or self.state.show_mz_labels) and self.state.selected_spectrum_idx is not None:
                     self.show_spectrum(self.state.selected_spectrum_idx)
                 # Reset IM m/z range if linking is enabled
                 if self.state.link_spectrum_mz_to_im and self.state.has_ion_mobility:
@@ -1435,12 +1425,6 @@ class SpectrumPanel(BasePanel):
     def _toggle_auto_scale(self, e):
         """Toggle auto Y-axis scaling."""
         self.state.spectrum_auto_scale = e.value
-        if self.state.selected_spectrum_idx is not None:
-            self.show_spectrum(self.state.selected_spectrum_idx)
-
-    def _toggle_downsampling(self, e):
-        """Toggle spectrum downsampling."""
-        self.state.spectrum_downsampling = e.value
         if self.state.selected_spectrum_idx is not None:
             self.show_spectrum(self.state.selected_spectrum_idx)
 

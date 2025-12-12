@@ -427,13 +427,13 @@ async def create_ui():
 
                     ui.label("Caches data to disk, reducing RAM usage").classes("text-xs text-gray-500 ml-6")
 
-                    # Peakmap downsampling toggle
+                    # Downsampling toggle (affects peak map, minimap, and spectrum)
                     with ui.row().classes("w-full items-center gap-2"):
                         ui.icon("speed").classes("text-gray-400 text-sm")
-                        ui.label("Peak map downsampling").classes("flex-grow text-sm")
+                        ui.label("Downsample Peaks").classes("flex-grow text-sm")
                         downsample_switch = ui.switch(value=state.peakmap_downsampling).props("dense")
 
-                    ui.label("Faster rendering for large datasets (>2M peaks)").classes(
+                    ui.label("Faster rendering for large datasets").classes(
                         "text-xs text-gray-500 ml-6"
                     )
 
@@ -481,13 +481,16 @@ async def create_ui():
                                 else:
                                     ui.notify(f"Out-of-core mode {mode_str}.", type="info")
 
-                            # Apply peakmap downsampling setting
+                            # Apply downsampling setting (affects peak map, minimap, and spectrum)
                             new_downsample = downsample_switch.value
                             if new_downsample != state.peakmap_downsampling:
                                 state.peakmap_downsampling = new_downsample
                                 # Trigger redraw if data is loaded
                                 if state.df is not None or state.data_manager is not None:
                                     state.emit_view_changed()
+                                # Re-render spectrum if one is selected
+                                if state.selected_spectrum_idx is not None:
+                                    state.emit_selection_changed("spectrum", state.selected_spectrum_idx)
 
                             dialog.close()
                             ui.notify("Panel settings updated", type="positive")
