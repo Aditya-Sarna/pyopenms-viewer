@@ -100,21 +100,11 @@ jobs:
             --hidden-import pyopenms_viewer.components \
             pyopenms_viewer/__main__.py'
 
-      - name: Create zip archive
-        run: |
-          cd dist
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            powershell Compress-Archive -Path pyopenms-viewer -DestinationPath ../pyopenms-viewer.zip
-          else
-            zip -r ../pyopenms-viewer.zip pyopenms-viewer
-          fi
-        shell: bash
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: pyopenms-viewer.zip
+          path: dist/pyopenms-viewer
 
   release:
     needs: build
@@ -129,6 +119,15 @@ jobs:
         with:
           path: artifacts
 
+      - name: Create zip archives for release
+        run: |
+          cd artifacts
+          for dir in */; do
+            name="${dir%/}"
+            (cd "$name" && zip -r "../${name}" .)
+          done
+          ls -la *.zip
+
       - name: Create or update GitHub Release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,17 +136,11 @@ jobs:
           set -euo pipefail
           echo "Tag: $TAG"
 
-          # Ensure gh CLI is available; it is installed on GitHub-hosted runners
-          if ! command -v gh >/dev/null 2>&1; then
-            echo "gh CLI not found; installing"
-            sudo apt-get update && sudo apt-get install -y gh
-          fi
-
           # Create release if it doesn't exist; otherwise upload and overwrite assets
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release exists for $TAG, uploading assets with --clobber"
-            gh release upload "$TAG" artifacts/**/* --clobber || true
+            gh release upload "$TAG" artifacts/*.zip --clobber || true
           else
             echo "Creating release for $TAG and uploading assets"
-            gh release create "$TAG" artifacts/**/* --generate-notes || true
+            gh release create "$TAG" artifacts/*.zip --generate-notes || true
           fi
