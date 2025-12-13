@@ -42,6 +42,8 @@ jobs:
       - name: Build with PyInstaller
         run: |
           bash -lc 'pyinstaller --onedir --name pyopenms-viewer --noconsole \
+            --additional-hooks-dir=hooks \
+            --runtime-hook=hooks/rthook-pyopenms.py \
             --collect-all numpy \
             --collect-binaries numpy \
             --collect-all pandas \
