@@ -242,14 +242,9 @@ async def create_ui():
             ).props("flat dense").tooltip("Open files (native mode)")
 
             # Compact drop zone
-            ui.upload(
-                label="Drop files here",
-                on_upload=handle_upload,
-                auto_upload=True,
-                multiple=True,
-            ).classes("w-40").props(
-                'accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml" flat dense bordered'
-            ).style("min-height: 32px;")
+            ui.upload(on_upload=handle_upload, auto_upload=True, multiple=True) \
+                .props('hide-upload-btn no-thumbnails accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml"') \
+                .classes('w-full border rounded')
 
             ui.separator().props("vertical").classes("h-6")
 
