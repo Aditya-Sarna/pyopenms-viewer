@@ -10,6 +10,7 @@ from pathlib import Path
 
 from nicegui import app, run, ui
 
+from pyopenms_viewer.components.local_file_picker import LocalFilePicker
 from pyopenms_viewer.core.state import ViewerState
 from pyopenms_viewer.loaders import FeatureLoader, IDLoader, MzMLLoader
 from pyopenms_viewer.panels import (
@@ -235,11 +236,49 @@ async def create_ui():
                 except Exception as ex:
                     ui.notify(f"File dialog error: {ex}", type="negative")
 
+            async def open_local_file_picker():
+                """Open local file picker dialog to browse server filesystem."""
+                picker = LocalFilePicker(directory=str(Path.cwd()), multiple=True)
+                picker.open()
+                result = await picker
+                if not result:
+                    return
+
+                for filepath in result:
+                    ext = Path(filepath).suffix.lower()
+                    name = Path(filepath).name
+
+                    try:
+                        if ext == ".mzml":
+                            await load_mzml(filepath, name)
+                        elif ext == ".featurexml":
+                            loader = FeatureLoader(state)
+                            success = await run.io_bound(loader.load_sync, filepath)
+                            if success:
+                                state.emit_data_loaded("features")
+                                ui.notify(f"Loaded {state.feature_map.size():,} features from {name}", type="positive")
+                        elif ext == ".idxml":
+                            loader = IDLoader(state)
+                            success = await run.io_bound(loader.load_sync, filepath)
+                            if success:
+                                state.emit_data_loaded("ids")
+                                ui.notify(f"Loaded IDs from {name}", type="positive")
+                        else:
+                            ui.notify(f"Unknown file type: {name}", type="warning")
+                    except Exception as ex:
+                        ui.notify(f"Error loading {name}: {ex}", type="negative")
+
             # Open button (native mode)
             ui.button(
                 icon="folder_open",
                 on_click=open_native_file_dialog,
             ).props("flat dense").tooltip("Open files (native mode)")
+
+            # Browse server button (local file picker)
+            ui.button(
+                icon="source",
+                on_click=open_local_file_picker,
+            ).props("flat dense").tooltip("Browse server files")
 
             # Compact drop zone
             ui.upload(on_upload=handle_upload, auto_upload=True, multiple=True) \

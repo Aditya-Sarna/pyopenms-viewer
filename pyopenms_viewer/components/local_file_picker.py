@@ -1,0 +1,115 @@
+"""Local file picker dialog for browsing server-side files.
+
+Based on NiceGUI's local_file_picker example:
+https://github.com/zauberzeug/nicegui/blob/main/examples/local_file_picker/local_file_picker.py
+"""
+
+import platform
+from pathlib import Path
+from typing import Optional
+
+from nicegui import events, ui
+
+
+class LocalFilePicker(ui.dialog):
+    """A dialog for picking files from the local filesystem."""
+
+    SUPPORTED_EXTENSIONS = {".mzml", ".featurexml", ".idxml", ".xml"}
+
+    def __init__(
+        self,
+        directory: str,
+        *,
+        upper_limit: Optional[str] = ...,
+        multiple: bool = True,
+        show_hidden_files: bool = False,
+    ) -> None:
+        """Initialize the file picker dialog.
+
+        Args:
+            directory: Starting directory path
+            upper_limit: Directory to stop at (None: no limit, ...: same as starting directory)
+            multiple: Allow selecting multiple files
+            show_hidden_files: Show hidden files (starting with .)
+        """
+        super().__init__()
+
+        self.path = Path(directory).expanduser()
+        if upper_limit is None:
+            self.upper_limit = None
+        else:
+            self.upper_limit = Path(directory if upper_limit is ... else upper_limit).expanduser()
+        self.show_hidden_files = show_hidden_files
+
+        with self, ui.card():
+            self._add_drives_toggle()
+            self.grid = ui.aggrid(
+                {
+                    "columnDefs": [{"field": "name", "headerName": "File"}],
+                    "rowSelection": {"mode": "multiRow" if multiple else "singleRow"},
+                },
+                html_columns=[0],
+            ).classes("w-96").on("cellDoubleClicked", self._handle_double_click)
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=self.close).props("outline")
+                ui.button("Ok", on_click=self._handle_ok)
+        self._update_grid()
+
+    def _add_drives_toggle(self) -> None:
+        """Add Windows drive selector if on Windows."""
+        if platform.system() == "Windows":
+            import win32api
+
+            drives = win32api.GetLogicalDriveStrings().split("\000")[:-1]
+            self.drives_toggle = ui.toggle(drives, value=drives[0], on_change=self._update_drive)
+
+    def _update_drive(self) -> None:
+        """Update path when drive changes (Windows only)."""
+        self.path = Path(self.drives_toggle.value).expanduser()
+        self._update_grid()
+
+    def _update_grid(self) -> None:
+        """Update the grid with current directory contents."""
+        paths = list(self.path.glob("*"))
+        if not self.show_hidden_files:
+            paths = [p for p in paths if not p.name.startswith(".")]
+
+        # Filter files to supported extensions, keep all directories
+        paths = [p for p in paths if p.is_dir() or p.suffix.lower() in self.SUPPORTED_EXTENSIONS]
+
+        paths.sort(key=lambda p: p.name.lower())
+        paths.sort(key=lambda p: not p.is_dir())
+
+        self.grid.options["rowData"] = [
+            {
+                "name": f"📁 <strong>{p.name}</strong>" if p.is_dir() else p.name,
+                "path": str(p),
+            }
+            for p in paths
+        ]
+
+        # Add parent directory entry
+        if (self.upper_limit is None and self.path != self.path.parent) or (
+            self.upper_limit is not None and self.path != self.upper_limit
+        ):
+            self.grid.options["rowData"].insert(0, {"name": "📁 <strong>..</strong>", "path": str(self.path.parent)})
+
+        self.grid.update()
+
+    def _handle_double_click(self, e: events.GenericEventArguments) -> None:
+        """Handle double-click on a row."""
+        self.path = Path(e.args["data"]["path"])
+        if self.path.is_dir():
+            self._update_grid()
+        else:
+            self.submit([str(self.path)])
+
+    async def _handle_ok(self) -> None:
+        """Handle OK button click."""
+        rows = await self.grid.get_selected_rows()
+        # Filter out directories
+        selected = [r["path"] for r in rows if not Path(r["path"]).is_dir()]
+        if selected:
+            self.submit(selected)
+        else:
+            ui.notify("Please select at least one file", type="warning")
