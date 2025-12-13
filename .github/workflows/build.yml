@@ -13,17 +13,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: pyopenms-viewer.exe
-            asset_name: pyopenms-viewer-windows-x64.exe
+            asset_name: pyopenms-viewer-windows-x64.zip
           - os: ubuntu-22.04
-            artifact_name: pyopenms-viewer
-            asset_name: pyopenms-viewer-linux-x64
+            asset_name: pyopenms-viewer-linux-x64.zip
           - os: macos-13
-            artifact_name: pyopenms-viewer
-            asset_name: pyopenms-viewer-macos-x64
+            asset_name: pyopenms-viewer-macos-x64.zip
           - os: macos-14
-            artifact_name: pyopenms-viewer
-            asset_name: pyopenms-viewer-macos-arm64
+            asset_name: pyopenms-viewer-macos-arm64.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -45,7 +41,7 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          bash -lc 'pyinstaller --onefile --name pyopenms-viewer --noconsole \
+          bash -lc 'pyinstaller --onedir --name pyopenms-viewer --noconsole \
             --collect-all numpy \
             --collect-binaries numpy \
             --collect-all pandas \
@@ -104,11 +100,21 @@ jobs:
             --hidden-import pyopenms_viewer.components \
             pyopenms_viewer/__main__.py'
 
+      - name: Create zip archive
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            powershell Compress-Archive -Path pyopenms-viewer -DestinationPath ../pyopenms-viewer.zip
+          else
+            zip -r ../pyopenms-viewer.zip pyopenms-viewer
+          fi
+        shell: bash
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.artifact_name }}
+          path: pyopenms-viewer.zip
 
   release:
     needs: build
