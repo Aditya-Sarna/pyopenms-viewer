@@ -238,7 +238,7 @@ async def create_ui():
 
             async def open_local_file_picker():
                 """Open local file picker dialog to browse server filesystem."""
-                picker = LocalFilePicker(directory=str(Path.cwd()), multiple=True)
+                picker = LocalFilePicker(directory=str(Path.cwd()), upper_limit=None, multiple=True)
                 picker.open()
                 result = await picker
                 if not result:
