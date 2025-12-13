@@ -47,9 +47,17 @@ jobs:
         run: |
           bash -lc 'pyinstaller --onefile --name pyopenms-viewer --noconsole \
             --collect-all numpy \
+            --collect-binaries numpy \
             --collect-all pandas \
             --collect-all datashader \
             --collect-all pyopenms \
+            --collect-binaries pyopenms \
+            --hidden-import pyopenms._pyopenms_1 \
+            --hidden-import pyopenms._pyopenms_2 \
+            --hidden-import pyopenms._pyopenms_3 \
+            --hidden-import pyopenms._pyopenms_4 \
+            --hidden-import pyopenms._pyopenms_5 \
+            --hidden-import pyopenms._all_modules \
             --collect-all nicegui \
             --collect-all plotly \
             --collect-all webview \
