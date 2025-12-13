@@ -40,7 +40,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system .
+          uv pip install --system ".[native]"
           uv pip install --system pyinstaller
 
       - name: Build with PyInstaller
@@ -52,6 +52,10 @@ jobs:
             --collect-all pyopenms \
             --collect-all nicegui \
             --collect-all plotly \
+            --collect-all webview \
+            --collect-all qtpy \
+            --collect-all PyQt6 \
+            --collect-all PyQt6-WebEngine \
             --hidden-import numpy._core._methods \
             --hidden-import numpy._core._dtype_ctypes \
             --hidden-import pyopenms_viewer \

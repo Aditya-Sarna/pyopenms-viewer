@@ -33,12 +33,22 @@ def get_cli_options() -> dict:
     return _cli_options
 
 
+def _check_native_available() -> bool:
+    """Check if pywebview is available for native mode."""
+    try:
+        import webview  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 @click.command()
 @click.argument("files", nargs=-1, type=click.Path(exists=True))
 @click.option("--port", "-p", default=8080, help="Port to run the server on")
 @click.option("--host", "-H", default="0.0.0.0", help="Host to bind to")
 @click.option("--open/--no-open", "-o/-n", default=True, help="Open browser automatically")
-@click.option("--native", is_flag=True, default=False, help="Run in native window mode")
+@click.option("--native/--browser", default=True, help="Run in native window (default) or browser mode")
 @click.option("--dark/--light", default=True, help="Use dark mode (default) or light mode")
 @click.option(
     "--out-of-core/--in-memory",
@@ -82,6 +92,17 @@ def main(files, port, host, open, native, dark, out_of_core, cache_dir):
         else:
             click.echo(f"Warning: Unknown file type: {ext}", err=True)
 
+    # Check native mode availability and fallback if needed
+    use_native = native
+    if native and not _check_native_available():
+        click.echo(
+            "Warning: Native mode requested but pywebview is not installed. "
+            "Falling back to browser mode.\n"
+            "Install native dependencies with: uv sync --extra native",
+            err=True,
+        )
+        use_native = False
+
     # Import here to avoid circular imports and slow startup for --help
     from nicegui import ui
     from nicegui.core import sio
@@ -101,9 +122,9 @@ def main(files, port, host, open, native, dark, out_of_core, cache_dir):
         host=host,
         port=port,
         reload=False,
-        show=open and not native,
-        native=native,
-        window_size=(1400, 900) if native else None,
+        show=open and not use_native,
+        native=use_native,
+        window_size=(1400, 900) if use_native else None,
         dark=dark,
         reconnect_timeout=60.0,
     )
