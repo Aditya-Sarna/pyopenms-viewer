@@ -268,22 +268,35 @@ async def create_ui():
                     except Exception as ex:
                         ui.notify(f"Error loading {name}: {ex}", type="negative")
 
-            # Open button (native mode)
+            async def open_files():
+                """Open files using native dialog (native mode) or local file picker (web mode)."""
+                if app.native.main_window:
+                    await open_native_file_dialog()
+                else:
+                    await open_local_file_picker()
+
+            # Open button - uses native dialog in native mode, local picker in web mode
             ui.button(
                 icon="folder_open",
-                on_click=open_native_file_dialog,
-            ).props("flat dense").tooltip("Open files (native mode)")
+                on_click=open_files,
+            ).props("flat dense").tooltip("Open files (fast, direct access)")
 
-            # Browse server button (local file picker)
+            # Collapsible drop zone for drag-and-drop uploads
+            upload_container = ui.row().classes("items-center")
+            upload_container.set_visibility(False)
+
+            def toggle_upload():
+                upload_container.set_visibility(not upload_container.visible)
+
             ui.button(
-                icon="source",
-                on_click=open_local_file_picker,
-            ).props("flat dense").tooltip("Browse server files")
+                icon="upload",
+                on_click=toggle_upload,
+            ).props("flat dense").tooltip("Toggle drag & drop zone (slower, uploads file)")
 
-            # Compact drop zone
-            ui.upload(on_upload=handle_upload, auto_upload=True, multiple=True) \
-                .props('hide-upload-btn no-thumbnails accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml"') \
-                .classes('w-full border rounded')
+            with upload_container:
+                ui.upload(on_upload=handle_upload, auto_upload=True, multiple=True) \
+                    .props('hide-upload-btn no-thumbnails accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml"') \
+                    .classes('w-full border rounded')
 
             ui.separator().props("vertical").classes("h-6")
 
