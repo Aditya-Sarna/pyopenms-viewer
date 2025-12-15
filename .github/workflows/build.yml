@@ -40,7 +40,7 @@ jobs:
           uv pip install --system pyinstaller pyinstaller-hooks-contrib
 
       - name: Build with nicegui pack
-        run: python -m nicegui pack --name pyopenms-viewer --onedir --windowed pyopenms_viewer/__main__.py
+        run: python -m nicegui.scripts.pack --name pyopenms-viewer --onedir --windowed pyopenms_viewer/__main__.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
