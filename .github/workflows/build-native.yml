@@ -1,0 +1,47 @@
+# GitHub Actions workflow for building native installers for pyopenms-viewer
+# Builds on push of a tag, for Windows, macOS, and Linux
+
+name: Build and Release Native Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+  os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pywebview pyopenms nicegui datashader duckdb pyarrow
+      - name: Build native app
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            pyinstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+          else
+            python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+          fi
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyopenms-viewer-${{ matrix.os }}
+          path: dist/
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
