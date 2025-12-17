@@ -46,12 +46,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/pyopenms-viewer.exe
             dist/pyopenms-viewer
             dist/pyopenms-viewer.app
             dist/*.dmg
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
