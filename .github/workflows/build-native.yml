@@ -31,9 +31,9 @@ jobs:
           if [ "$RUNNER_OS" == "Windows" ]; then
             pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+            python -m PyInstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
           else
-            python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+            python -m PyInstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
           fi
         shell: bash
       - name: Archive build artifacts
