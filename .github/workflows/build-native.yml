@@ -29,7 +29,7 @@ jobs:
       - name: Build native app
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
-            pyinstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+            pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
           elif [ "$RUNNER_OS" == "macOS" ]; then
             python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
           else
@@ -45,6 +45,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**
+          files: |
+            dist/pyopenms-viewer.exe
+            dist/pyopenms-viewer
+            dist/pyopenms-viewer.app
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
