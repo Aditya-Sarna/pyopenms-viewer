@@ -29,10 +29,10 @@ jobs:
           pip install -e ".[native]"
       - name: Build native app (Windows)
         if: runner.os == 'Windows'
-        run: |
-          pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer \
-            --collect-all pyopenms --collect-all plotly --additional-hooks-dir=. \
-            pyopenms_viewer/__main__.py
+        run: >-
+          pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer
+          --collect-all pyopenms --collect-all plotly --additional-hooks-dir=.
+          pyopenms_viewer/__main__.py
       - name: Build native app (macOS)
         if: runner.os == 'macOS'
         run: |
