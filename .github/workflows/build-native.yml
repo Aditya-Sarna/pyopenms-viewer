@@ -34,7 +34,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer --collect-all pyopenms --additional-hooks-dir=. pyopenms_viewer/__main__.py
-          cd dist && zip -r pyopenms-viewer-macos.zip pyopenms-viewer.app && cd ..
+          cd dist && zip -r pyopenms-viewer-macos.zip pyopenms-viewer.app && ls -lh pyopenms-viewer-macos.zip && cd ..
       - name: Build native app (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -44,6 +44,11 @@ jobs:
         with:
           name: pyopenms-viewer-${{ matrix.os }}
           path: dist/
+      - name: Verify macOS zip exists
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        run: |
+          ls -lh dist/
+          test -f dist/pyopenms-viewer-macos.zip && echo "✓ Zip file found" || echo "✗ Zip file NOT found"
       - name: Create GitHub Release (Windows)
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
         uses: softprops/action-gh-release@v2
