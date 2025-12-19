@@ -6,7 +6,11 @@
 
 ## macOS
 - If you see a warning about unsigned apps, right-click the .app and choose "Open" to bypass Gatekeeper.
-- If the app fails to launch, check for missing .dylib dependencies in the Console log.
+- If Finder reports that the app is damaged or it just bounces in the dock, remove the quarantine flag after unzipping:
+	```bash
+	xattr -dr com.apple.quarantine pyopenms-viewer.app
+	```
+- If the app fails to launch, check for missing modules or .dylib dependencies in the Console log. Recent builds bundle Plotly, but if you see `ModuleNotFoundError: plotly` reinstall the latest release or rebuild with the documented PyInstaller command.
 - For full notarization, see Apple documentation (optional).
 
 ## Linux

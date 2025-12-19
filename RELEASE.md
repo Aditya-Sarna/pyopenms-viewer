@@ -12,6 +12,11 @@ When a new version tag (e.g., v1.2.3) is pushed to the repository, the GitHub Ac
 ## Manual Release Steps (if needed)
 If you need to manually upload an installer:
 1. Build the app locally using PyInstaller.
+   ```bash
+   python -m PyInstaller --noconfirm --onedir --windowed --name pyopenms-viewer \
+	   --collect-all pyopenms --collect-all plotly --additional-hooks-dir=. \
+	   pyopenms_viewer/__main__.py
+   ```
 2. Go to the GitHub Releases page for your repo.
 3. Click "Edit" on the relevant release, and upload the installer file(s).
 
