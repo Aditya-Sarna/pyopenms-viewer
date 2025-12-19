@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-          os: [macos-15]
+        os: [windows-latest, ubuntu-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -26,33 +26,44 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller pywebview pyopenms nicegui datashader duckdb pyarrow
-      - name: Build native app
+      - name: Build native app (Windows)
+        if: runner.os == 'Windows'
         run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
-            # Create .dmg if .app exists
-            if [ -d dist/pyopenms-viewer.app ]; then
-              pip install create-dmg
-              create-dmg dist/pyopenms-viewer.app dist/
-            fi
-          else
-            python -m PyInstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
-          fi
-        shell: bash
+          pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+      - name: Build native app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+      - name: Build native app (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python -m PyInstaller --noconfirm --onefile --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
       - name: Archive build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pyopenms-viewer-${{ matrix.os }}
           path: dist/
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create GitHub Release (Windows)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/pyopenms-viewer.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release (macOS)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/pyopenms-viewer.app/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release (Linux)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Linux'
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/pyopenms-viewer
-            dist/pyopenms-viewer.app
-            dist/*.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
