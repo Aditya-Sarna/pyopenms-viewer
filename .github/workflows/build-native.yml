@@ -33,7 +33,7 @@ jobs:
       - name: Build native app (macOS)
         if: runner.os == 'macOS'
         run: |
-          python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer pyopenms_viewer/__main__.py
+          python -m PyInstaller --noconfirm --windowed --name pyopenms-viewer --collect-all pyopenms --additional-hooks-dir=. pyopenms_viewer/__main__.py
           cd dist && zip -r pyopenms-viewer-macos.zip pyopenms-viewer.app && cd ..
       - name: Build native app (Linux)
         if: runner.os == 'Linux'
