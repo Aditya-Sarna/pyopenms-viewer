@@ -140,7 +140,8 @@ async def create_ui():
 
                 # Save to temp file using FileUpload.save()
                 suffix = Path(filename).suffix
-                tmp_path = tempfile.mktemp(suffix=suffix)
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                os.close(fd)
                 await file.save(tmp_path)
 
                 try:
@@ -294,9 +295,9 @@ async def create_ui():
             ).props("flat dense").tooltip("Toggle drag & drop zone (slower, uploads file)")
 
             with upload_container:
-                ui.upload(on_upload=handle_upload, auto_upload=True, multiple=True) \
-                    .props('hide-upload-btn no-thumbnails accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml"') \
-                    .classes('w-full border rounded')
+                ui.upload(on_upload=handle_upload, auto_upload=True, multiple=True).props(
+                    'hide-upload-btn no-thumbnails accept=".mzML,.mzml,.featureXML,.featurexml,.idXML,.idxml,.xml"'
+                ).classes("w-full border rounded")
 
             ui.separator().props("vertical").classes("h-6")
 
@@ -480,9 +481,7 @@ async def create_ui():
                         ui.label("Downsample Peaks").classes("flex-grow text-sm")
                         downsample_switch = ui.switch(value=state.peakmap_downsampling).props("dense")
 
-                    ui.label("Faster rendering for large datasets").classes(
-                        "text-xs text-gray-500 ml-6"
-                    )
+                    ui.label("Faster rendering for large datasets").classes("text-xs text-gray-500 ml-6")
 
                     # Cache status
                     def get_cache_status():
