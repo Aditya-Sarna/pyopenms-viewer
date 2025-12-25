@@ -40,9 +40,22 @@ jobs:
           .\dist\pyopenms-viewer.exe -c "import pyopenms; print(f'pyOpenMS version: {pyopenms.__version__}')" || echo "Direct import test failed, trying file load..."
           
       - name: Smoke test with actual mzML file
+        # Run the GUI exe for 30s to exercise pyopenms import; use PowerShell to manage the process
+        shell: powershell
         run: |
-          echo "Testing with BSA1_F1.mzML to validate pyopenms DLL loading..."
-          timeout 30 .\dist\pyopenms-viewer.exe tests/data/BSA1_F1.mzML || echo "Window opened successfully (timeout expected)"
+          Write-Host "Testing with BSA1_F1.mzML to validate pyopenms DLL loading..."
+          $proc = Start-Process -FilePath .\dist\pyopenms-viewer.exe -ArgumentList 'tests/data/BSA1_F1.mzML' -PassThru -NoNewWindow
+          Start-Sleep -Seconds 30
+          if (-not $proc.HasExited) {
+            try {
+              $proc.Kill()
+              Write-Host "Window opened successfully (timeout expected)"
+            } catch {
+              Write-Host "Failed to kill process: $_"
+            }
+          } else {
+            Write-Host "Process exited within timeout (exit code: $($proc.ExitCode))"
+          }
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
