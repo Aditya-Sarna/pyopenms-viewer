@@ -14,11 +14,15 @@ def pre_safe_import_module(api):
     This runs in the parent process. Environment variable changes (os.environ)
     are inherited by any subprocesses spawned after this point.
     """
+    print("[HOOK PRE-SAFE-IMPORT] hook-pyopenms.py executing!", flush=True)
+    
     if sys.platform == 'win32':
         try:
             pkg_base, pkg_dir = get_package_paths('pyopenms')
             pyopenms_dir = pkg_dir  # site-packages/pyopenms
             share_dir = os.path.join(pkg_base, 'share')
+            
+            print(f"[HOOK PRE-SAFE-IMPORT] Found pyopenms at: {pyopenms_dir}", flush=True)
             
             # Add directories to PATH environment variable
             # This WILL be inherited by subprocesses that PyInstaller spawns
@@ -35,6 +39,7 @@ def pre_safe_import_module(api):
                 if current_path:
                     new_path += os.pathsep + current_path
                 os.environ['PATH'] = new_path
+                print(f"[HOOK PRE-SAFE-IMPORT] Modified PATH, added: {paths_to_add}", flush=True)
             
             # Also try add_dll_directory for the parent process
             # (won't affect subprocess, but good for consistency)
@@ -42,11 +47,14 @@ def pre_safe_import_module(api):
                 for path in paths_to_add:
                     try:
                         os.add_dll_directory(path)
-                    except (OSError, FileNotFoundError):
-                        pass
+                        print(f"[HOOK PRE-SAFE-IMPORT] Added DLL directory: {path}", flush=True)
+                    except (OSError, FileNotFoundError) as e:
+                        print(f"[HOOK PRE-SAFE-IMPORT] Failed to add DLL directory: {e}", flush=True)
                         
-        except Exception:
+        except Exception as e:
             # Silently fail - don't break PyInstaller if this doesn't work
-            pass
+            print(f"[HOOK PRE-SAFE-IMPORT] ERROR: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
 
