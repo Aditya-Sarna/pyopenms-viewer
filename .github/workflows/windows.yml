@@ -35,22 +35,23 @@ jobs:
           $shareDir = Join-Path $sitePackages "share"
           
           # Create a sitecustomize.py to add DLL directory on Python startup
-          $sitecustomize = @"
+          $content = @"
 import os
 import sys
 # Add OpenMS DLL directory for Python 3.8+ DLL loading
 share_dir = r'$shareDir'
 if hasattr(os, 'add_dll_directory') and os.path.exists(share_dir):
     os.add_dll_directory(share_dir)
-    print(f'Added DLL directory: {share_dir}')
+    print(f'Added DLL directory: {{share_dir}}')
 "@
           
           $sitecustomizePath = Join-Path $sitePackages "sitecustomize.py"
-          Set-Content -Path $sitecustomizePath -Value $sitecustomize
+          Set-Content -Path $sitecustomizePath -Value $content -Encoding UTF8
           Write-Host "Created sitecustomize.py to add DLL directory on Python startup"
+          Get-Content $sitecustomizePath
           
           # Also add to PATH as fallback
-          Write-Host "Adding to PATH: $shareDir"
+          Write-Host "`nAdding to PATH: $shareDir"
           echo "$shareDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           
           # Verify DLLs exist
