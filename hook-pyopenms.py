@@ -5,6 +5,7 @@
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, get_package_paths
 import os
 import sys
+import glob
 
 datas, binaries, hiddenimports = collect_all('pyopenms')
 
@@ -19,6 +20,19 @@ try:
     
     # Collect ALL files from pyopenms directory
     if os.path.exists(pkg_dir):
+        print(f"hook-pyopenms: Collecting from {pkg_dir}")
+        
+        # First pass: collect ALL DLLs (including Qt6, OpenMS, etc.)
+        all_dlls = glob.glob(os.path.join(pkg_dir, '*.dll'))
+        for dll_path in all_dlls:
+            dll_name = os.path.basename(dll_path)
+            print(f"hook-pyopenms: Found DLL: {dll_name}")
+            # Add to binaries, placing in root directory
+            if not any(dll_path == b[0] for b in binaries):
+                binaries.append((dll_path, '.'))
+                print(f"hook-pyopenms: Collecting {dll_name}")
+        
+        # Second pass: collect all other files
         for root, dirs, files in os.walk(pkg_dir):
             for file in files:
                 src = os.path.join(root, file)
@@ -29,7 +43,8 @@ try:
                 # Add binaries to binaries list (they go to root of frozen app)
                 # Add data files to datas list (preserving structure)
                 if file.endswith(('.pyd', '.dll', '.so', '.dylib', '.exe')):
-                    binaries.append((src, '.'))  # Place DLLs in root for easier loading
+                    if not any(src == b[0] for b in binaries):
+                        binaries.append((src, '.'))  # Place DLLs in root for easier loading
                 else:
                     # Only add data files that aren't already collected
                     if not any(src == d[0] for d in datas):
@@ -46,12 +61,16 @@ try:
                 # For DLLs in share/, put them in root directory for easier loading
                 # For data files, preserve directory structure
                 if file.endswith(('.dll', '.so', '.dylib', '.exe')):
-                    binaries.append((src, '.'))  # Root directory
-                    print(f"hook-pyopenms: Collecting binary {file} from share/")
+                    if not any(src == b[0] for b in binaries):
+                        binaries.append((src, '.'))  # Root directory
+                        print(f"hook-pyopenms: Collecting binary {file} from share/")
                 else:
                     rel_path = os.path.relpath(root, pkg_base)
                     if not any(src == d[0] for d in datas):
                         datas.append((src, rel_path))
+    
+    print(f"hook-pyopenms: Total binaries collected: {len([b for b in binaries if b[0].endswith('.dll')])}")
+    
 except Exception as e:
     # If we can't locate pyopenms, log it but don't fail
     print(f"Warning: Could not fully collect pyopenms files: {e}")
