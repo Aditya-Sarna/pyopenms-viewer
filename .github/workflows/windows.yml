@@ -26,31 +26,36 @@ jobs:
           pip install pyinstaller
           pip install -e ".[native]"
 
-      - name: Add pyopenms DLLs to PATH for build
+      - name: Create DLL loader script for PyInstaller
         shell: pwsh
         run: |
           $pythonPath = (Get-Command python).Source
           $pythonDir = Split-Path $pythonPath
           $sitePackages = Join-Path $pythonDir "Lib\site-packages"
-          $pyopenmsDir = Join-Path $sitePackages "pyopenms"
           $shareDir = Join-Path $sitePackages "share"
           
-          Write-Host "Adding DLL directories to PATH:"
-          Write-Host "  - pyopenms: $pyopenmsDir"
-          Write-Host "  - share: $shareDir"
+          # Create a sitecustomize.py to add DLL directory on Python startup
+          $sitecustomize = @"
+import os
+import sys
+# Add OpenMS DLL directory for Python 3.8+ DLL loading
+share_dir = r'$shareDir'
+if hasattr(os, 'add_dll_directory') and os.path.exists(share_dir):
+    os.add_dll_directory(share_dir)
+    print(f'Added DLL directory: {share_dir}')
+"@
           
-          # Add both directories to PATH for this and subsequent steps
-          echo "$pyopenmsDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $sitecustomizePath = Join-Path $sitePackages "sitecustomize.py"
+          Set-Content -Path $sitecustomizePath -Value $sitecustomize
+          Write-Host "Created sitecustomize.py to add DLL directory on Python startup"
+          
+          # Also add to PATH as fallback
+          Write-Host "Adding to PATH: $shareDir"
           echo "$shareDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           
-          # Also set for current step
-          $env:PATH = "$pyopenmsDir;$shareDir;$env:PATH"
-          
           # Verify DLLs exist
-          Write-Host "`nDLLs in pyopenms directory:"
-          Get-ChildItem $pyopenmsDir -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 10 Name
           Write-Host "`nDLLs in share directory:"
-          Get-ChildItem $shareDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 10 Name
+          Get-ChildItem $shareDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 15 Name
 
       - name: Build Windows EXE
         run: pyinstaller --noconfirm pyopenms-viewer-windows.spec
