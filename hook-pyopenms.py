@@ -17,32 +17,39 @@ binaries += collect_dynamic_libs('pyopenms')
 try:
     pkg_base, pkg_dir = get_package_paths('pyopenms')
     
-    # Collect ALL files from pyopenms directory (including share/OpenMS binaries)
+    # Collect ALL files from pyopenms directory
     if os.path.exists(pkg_dir):
         for root, dirs, files in os.walk(pkg_dir):
             for file in files:
                 src = os.path.join(root, file)
-                # Preserve directory structure relative to site-packages
-                rel_path = os.path.relpath(root, pkg_base)
+                # Get path relative to pyopenms package (not site-packages)
+                rel_path = os.path.relpath(root, pkg_dir)
+                dest_dir = os.path.join('pyopenms', rel_path) if rel_path != '.' else 'pyopenms'
                 
-                # Add binaries to binaries list, everything else to datas
+                # Add binaries to binaries list (they go to root of frozen app)
+                # Add data files to datas list (preserving structure)
                 if file.endswith(('.pyd', '.dll', '.so', '.dylib', '.exe')):
-                    binaries.append((src, rel_path))
+                    binaries.append((src, '.'))  # Place DLLs in root for easier loading
                 else:
                     # Only add data files that aren't already collected
                     if not any(src == d[0] for d in datas):
-                        datas.append((src, rel_path))
+                        datas.append((src, dest_dir))
     
     # Also check for share/ directory at site-packages level (OpenMS THIRDPARTY libs)
+    # These DLLs are CRITICAL for pyopenms on Windows
     share_dir = os.path.join(pkg_base, 'share')
     if os.path.exists(share_dir):
+        print(f"hook-pyopenms: Collecting OpenMS libraries from {share_dir}")
         for root, dirs, files in os.walk(share_dir):
             for file in files:
                 src = os.path.join(root, file)
-                rel_path = os.path.relpath(root, pkg_base)
+                # For DLLs in share/, put them in root directory for easier loading
+                # For data files, preserve directory structure
                 if file.endswith(('.dll', '.so', '.dylib', '.exe')):
-                    binaries.append((src, rel_path))
+                    binaries.append((src, '.'))  # Root directory
+                    print(f"hook-pyopenms: Collecting binary {file} from share/")
                 else:
+                    rel_path = os.path.relpath(root, pkg_base)
                     if not any(src == d[0] for d in datas):
                         datas.append((src, rel_path))
 except Exception as e:
