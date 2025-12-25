@@ -25,6 +25,17 @@ if getattr(sys, 'frozen', False):
     exe_dir = sys._MEIPASS  # PyInstaller's temporary extraction directory
     debug_print(f"[pyi_rth_pyopenms] exe_dir (sys._MEIPASS): {exe_dir}")
     
+    # List critical DLLs to verify they're present
+    critical_dlls = ['OpenMS.dll', 'Qt6Core.dll', 'Qt6Network.dll', 'msvcp140.dll', 'vcomp140.dll']
+    debug_print(f"[pyi_rth_pyopenms] Checking for critical DLLs in {exe_dir}:")
+    for dll in critical_dlls:
+        dll_path = os.path.join(exe_dir, dll)
+        if os.path.exists(dll_path):
+            dll_size = os.path.getsize(dll_path)
+            debug_print(f"[pyi_rth_pyopenms]   ✓ {dll} ({dll_size:,} bytes)")
+        else:
+            debug_print(f"[pyi_rth_pyopenms]   ✗ {dll} NOT FOUND")
+    
     # CRITICAL: Add to PATH first (this affects LoadLibrary calls)
     # Windows searches PATH for DLLs when loading extension modules
     current_path = os.environ.get('PATH', '')
