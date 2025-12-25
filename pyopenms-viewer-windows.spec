@@ -2,6 +2,32 @@
 # Windows-specific spec file for single-file executable
 from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 import sys
+import os
+
+# CRITICAL: Add pyopenms directory to DLL search path BEFORE Analysis runs
+# This ensures PyInstaller's isolated subprocesses can find OpenMS.dll
+if sys.platform == 'win32':
+    import site
+    site_packages = site.getsitepackages()[0]
+    pyopenms_dir = os.path.join(site_packages, 'pyopenms')
+    share_dir = os.path.join(site_packages, 'share')
+    
+    # Add to PATH for subprocess inheritance
+    if os.path.exists(pyopenms_dir):
+        os.environ['PATH'] = pyopenms_dir + os.pathsep + os.environ.get('PATH', '')
+        print(f"[SPEC] Added to PATH: {pyopenms_dir}")
+    if os.path.exists(share_dir):
+        os.environ['PATH'] = share_dir + os.pathsep + os.environ.get('PATH', '')
+        print(f"[SPEC] Added to PATH: {share_dir}")
+    
+    # Add to DLL search directories (Python 3.8+)
+    if hasattr(os, 'add_dll_directory'):
+        if os.path.exists(pyopenms_dir):
+            os.add_dll_directory(pyopenms_dir)
+            print(f"[SPEC] Added DLL directory: {pyopenms_dir}")
+        if os.path.exists(share_dir):
+            os.add_dll_directory(share_dir)
+            print(f"[SPEC] Added DLL directory: {share_dir}")
 
 datas = []
 binaries = []
