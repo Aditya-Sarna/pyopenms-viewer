@@ -34,15 +34,17 @@ jobs:
           $pythonDir = Split-Path $pythonPath
           $sitePackages = Join-Path $pythonDir "Lib\site-packages"
           $shareDir = Join-Path $sitePackages "share"
+          $pyopenmsDir = Join-Path $sitePackages "pyopenms"
           
           Write-Host "Configuring DLL search paths for pyopenms"
           
-          # Create a .pth file that adds share directory to PATH on every Python startup
-          # This ensures PyInstaller's subprocesses can find DLLs
+          # Create a .pth file that adds BOTH share/ AND pyopenms/ directories to PATH
+          # OpenMS.dll is in pyopenms/, not share/!
+          # This ensures PyInstaller's subprocesses can find all DLLs
           $pthFile = Join-Path $sitePackages "zzz_pyopenms_dll.pth"
           # Avoid expressions that evaluate to None (which can break site.addpackage)
-          # Use short-circuiting to only set PATH/add_dll_directory when the share dir exists.
-          $pthContent = "import os, sys; p = r'$shareDir'; os.path.exists(p) and os.environ.__setitem__('PATH', p + os.pathsep + os.environ.get('PATH','')); (hasattr(os, 'add_dll_directory') and os.path.exists(p)) and os.add_dll_directory(p)"
+          # Use short-circuiting and list comprehensions to handle multiple directories
+          $pthContent = "import os, sys; p1 = r'$shareDir'; p2 = r'$pyopenmsDir'; dirs = [d for d in [p1, p2] if os.path.exists(d)]; [os.add_dll_directory(d) for d in dirs if hasattr(os, 'add_dll_directory')]; dirs and os.environ.__setitem__('PATH', os.pathsep.join(dirs) + os.pathsep + os.environ.get('PATH',''))"
           Set-Content -Path $pthFile -Value $pthContent -Encoding ASCII
           Write-Host "Created .pth file: $pthFile"
           Get-Content $pthFile
