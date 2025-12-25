@@ -40,9 +40,7 @@ jobs:
           # Create a .pth file that will execute on Python startup to add DLL directory
           # This is more reliable than sitecustomize.py for subprocess imports
           $pthFile = Join-Path $sitePackages "zzz_pyopenms_dll.pth"
-          $pthContent = @"
-import os, sys; os.add_dll_directory(r'$shareDir') if hasattr(os, 'add_dll_directory') and os.path.exists(r'$shareDir') else None
-"@
+          $pthContent = "import os, sys; os.add_dll_directory(r'$shareDir') if hasattr(os, 'add_dll_directory') and os.path.exists(r'$shareDir') else None"
           Set-Content -Path $pthFile -Value $pthContent -Encoding ASCII
           Write-Host "Created .pth file: $pthFile"
           Get-Content $pthFile
