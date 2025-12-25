@@ -7,27 +7,40 @@ import os
 # CRITICAL: Add pyopenms directory to DLL search path BEFORE Analysis runs
 # This ensures PyInstaller's isolated subprocesses can find OpenMS.dll
 if sys.platform == 'win32':
-    import site
-    site_packages = site.getsitepackages()[0]
-    pyopenms_dir = os.path.join(site_packages, 'pyopenms')
-    share_dir = os.path.join(site_packages, 'share')
-    
-    # Add to PATH for subprocess inheritance
-    if os.path.exists(pyopenms_dir):
-        os.environ['PATH'] = pyopenms_dir + os.pathsep + os.environ.get('PATH', '')
-        print(f"[SPEC] Added to PATH: {pyopenms_dir}")
-    if os.path.exists(share_dir):
-        os.environ['PATH'] = share_dir + os.pathsep + os.environ.get('PATH', '')
-        print(f"[SPEC] Added to PATH: {share_dir}")
-    
-    # Add to DLL search directories (Python 3.8+)
-    if hasattr(os, 'add_dll_directory'):
+    # Find pyopenms directory using PyInstaller's utilities
+    from PyInstaller.utils.hooks import get_package_paths
+    try:
+        pkg_base, pkg_dir = get_package_paths('pyopenms')
+        pyopenms_dir = pkg_dir  # This is site-packages/pyopenms
+        share_dir = os.path.join(pkg_base, 'share')  # This is site-packages/share
+        
+        print(f"[SPEC] pkg_base (site-packages): {pkg_base}")
+        print(f"[SPEC] pyopenms directory: {pyopenms_dir}")
+        print(f"[SPEC] share directory: {share_dir}")
+        
+        # Add to PATH for subprocess inheritance
         if os.path.exists(pyopenms_dir):
-            os.add_dll_directory(pyopenms_dir)
-            print(f"[SPEC] Added DLL directory: {pyopenms_dir}")
+            os.environ['PATH'] = pyopenms_dir + os.pathsep + os.environ.get('PATH', '')
+            print(f"[SPEC] Added to PATH: {pyopenms_dir}")
+        else:
+            print(f"[SPEC] WARNING: pyopenms directory not found: {pyopenms_dir}")
+            
         if os.path.exists(share_dir):
-            os.add_dll_directory(share_dir)
-            print(f"[SPEC] Added DLL directory: {share_dir}")
+            os.environ['PATH'] = share_dir + os.pathsep + os.environ.get('PATH', '')
+            print(f"[SPEC] Added to PATH: {share_dir}")
+        else:
+            print(f"[SPEC] NOTE: share directory not found: {share_dir}")
+        
+        # Add to DLL search directories (Python 3.8+)
+        if hasattr(os, 'add_dll_directory'):
+            if os.path.exists(pyopenms_dir):
+                os.add_dll_directory(pyopenms_dir)
+                print(f"[SPEC] Added DLL directory: {pyopenms_dir}")
+            if os.path.exists(share_dir):
+                os.add_dll_directory(share_dir)
+                print(f"[SPEC] Added DLL directory: {share_dir}")
+    except Exception as e:
+        print(f"[SPEC] ERROR: Failed to locate pyopenms: {e}")
 
 datas = []
 binaries = []
