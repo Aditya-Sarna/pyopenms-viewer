@@ -54,7 +54,19 @@ jobs:
           
           # Verify DLLs exist
           Write-Host "`nDLLs in share directory:"
-          Get-ChildItem $shareDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 15 Name
+          Get-ChildItem $shareDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object Name
+          
+          Write-Host "`nChecking for OpenMS.dll specifically:"
+          $openMSDll = Get-ChildItem $shareDir -Recurse -Filter "OpenMS.dll" -ErrorAction SilentlyContinue
+          if ($openMSDll) {
+            Write-Host "  FOUND: $($openMSDll.FullName)"
+          } else {
+            Write-Host "  NOT FOUND - This is the problem!"
+            Write-Host "`nSearching entire site-packages for OpenMS.dll:"
+            Get-ChildItem $sitePackages -Recurse -Filter "OpenMS.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "  Found at: $($_.FullName)"
+            }
+          }
 
       - name: Analyze pyopenms DLL dependencies
         shell: pwsh
