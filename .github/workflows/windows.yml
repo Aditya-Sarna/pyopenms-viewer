@@ -34,20 +34,22 @@ jobs:
           $sitePackages = Join-Path $pythonDir "Lib\site-packages"
           $shareDir = Join-Path $sitePackages "share"
           
-          # Create a sitecustomize.py to add DLL directory on Python startup
-          $content = @"
-import os
-import sys
-# Add OpenMS DLL directory for Python 3.8+ DLL loading
-share_dir = r'$shareDir'
-if hasattr(os, 'add_dll_directory') and os.path.exists(share_dir):
-    os.add_dll_directory(share_dir)
-    print(f'Added DLL directory: {{share_dir}}')
-"@
+          Write-Host "Creating sitecustomize.py to add DLL directory on Python startup"
+          
+          # Create sitecustomize.py content
+          $line1 = "import os"
+          $line2 = "import sys"
+          $line3 = "# Add OpenMS DLL directory for Python 3.8+ DLL loading"
+          $line4 = "share_dir = r'$shareDir'"
+          $line5 = "if hasattr(os, 'add_dll_directory') and os.path.exists(share_dir):"
+          $line6 = "    os.add_dll_directory(share_dir)"
+          $line7 = "    print(f'Added DLL directory: {share_dir}')"
+          
+          $content = "$line1`n$line2`n$line3`n$line4`n$line5`n$line6`n$line7"
           
           $sitecustomizePath = Join-Path $sitePackages "sitecustomize.py"
           Set-Content -Path $sitecustomizePath -Value $content -Encoding UTF8
-          Write-Host "Created sitecustomize.py to add DLL directory on Python startup"
+          Write-Host "Created sitecustomize.py"
           Get-Content $sitecustomizePath
           
           # Also add to PATH as fallback
