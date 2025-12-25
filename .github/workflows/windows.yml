@@ -40,7 +40,9 @@ jobs:
           # Create a .pth file that adds share directory to PATH on every Python startup
           # This ensures PyInstaller's subprocesses can find DLLs
           $pthFile = Join-Path $sitePackages "zzz_pyopenms_dll.pth"
-          $pthContent = "import os, sys; os.environ['PATH'] = r'$shareDir' + os.pathsep + os.environ.get('PATH', '') if os.path.exists(r'$shareDir') else None; os.add_dll_directory(r'$shareDir') if hasattr(os, 'add_dll_directory') and os.path.exists(r'$shareDir') else None"
+          # Avoid expressions that evaluate to None (which can break site.addpackage)
+          # Use short-circuiting to only set PATH/add_dll_directory when the share dir exists.
+          $pthContent = "import os, sys; p = r'$shareDir'; os.path.exists(p) and os.environ.__setitem__('PATH', p + os.pathsep + os.environ.get('PATH','')); (hasattr(os, 'add_dll_directory') and os.path.exists(p)) and os.add_dll_directory(p)"
           Set-Content -Path $pthFile -Value $pthContent -Encoding ASCII
           Write-Host "Created .pth file: $pthFile"
           Get-Content $pthFile
