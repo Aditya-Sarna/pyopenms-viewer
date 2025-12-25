@@ -56,6 +56,30 @@ jobs:
           Write-Host "`nDLLs in share directory:"
           Get-ChildItem $shareDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 15 Name
 
+      - name: Analyze pyopenms DLL dependencies
+        shell: pwsh
+        run: |
+          Write-Host "Checking dependencies of _pyopenms_1.pyd..."
+          $pyopenmsModule = Get-ChildItem "C:\hostedtoolcache\windows\Python\3.10.11\x64\Lib\site-packages\pyopenms" -Filter "_pyopenms_1*.pyd" | Select-Object -First 1
+          if ($pyopenmsModule) {
+            Write-Host "Found: $($pyopenmsModule.FullName)"
+            Write-Host "`nDirect dependencies:"
+            dumpbin /DEPENDENTS $pyopenmsModule.FullName
+            Write-Host "`nChecking if all dependencies exist in share/..."
+            $sharePath = "C:\hostedtoolcache\windows\Python\3.10.11\x64\Lib\site-packages\share"
+            dumpbin /DEPENDENTS $pyopenmsModule.FullName | Select-String -Pattern "\.dll" | ForEach-Object {
+              $dllName = $_.Line.Trim()
+              $dllPath = Join-Path $sharePath $dllName
+              if (Test-Path $dllPath) {
+                Write-Host "  ✓ $dllName found in share/"
+              } else {
+                Write-Host "  ✗ $dllName NOT FOUND in share/"
+              }
+            }
+          } else {
+            Write-Host "ERROR: Could not find _pyopenms_1.pyd"
+          }
+
       - name: Build Windows EXE
         run: pyinstaller --noconfirm pyopenms-viewer-windows.spec
 
