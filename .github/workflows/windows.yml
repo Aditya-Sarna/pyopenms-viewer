@@ -63,18 +63,41 @@ jobs:
           $pyopenmsModule = Get-ChildItem "C:\hostedtoolcache\windows\Python\3.10.11\x64\Lib\site-packages\pyopenms" -Filter "_pyopenms_1*.pyd" | Select-Object -First 1
           if ($pyopenmsModule) {
             Write-Host "Found: $($pyopenmsModule.FullName)"
-            Write-Host "`nDirect dependencies:"
-            dumpbin /DEPENDENTS $pyopenmsModule.FullName
-            Write-Host "`nChecking if all dependencies exist in share/..."
-            $sharePath = "C:\hostedtoolcache\windows\Python\3.10.11\x64\Lib\site-packages\share"
-            dumpbin /DEPENDENTS $pyopenmsModule.FullName | Select-String -Pattern "\.dll" | ForEach-Object {
-              $dllName = $_.Line.Trim()
-              $dllPath = Join-Path $sharePath $dllName
-              if (Test-Path $dllPath) {
-                Write-Host "  ✓ $dllName found in share/"
+            
+            # Find dumpbin in Visual Studio installation
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (Test-Path $vswhere) {
+              $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+              if ($vsPath) {
+                # Find the latest VC tools version
+                $vcToolsPath = Join-Path $vsPath "VC\Tools\MSVC"
+                $latestVersion = Get-ChildItem $vcToolsPath | Sort-Object Name -Descending | Select-Object -First 1
+                $dumpbinPath = Join-Path $latestVersion.FullName "bin\Hostx64\x64\dumpbin.exe"
+                
+                if (Test-Path $dumpbinPath) {
+                  Write-Host "`nDirect dependencies:"
+                  & $dumpbinPath /DEPENDENTS $pyopenmsModule.FullName
+                  
+                  Write-Host "`nChecking if all dependencies exist in share/..."
+                  $sharePath = "C:\hostedtoolcache\windows\Python\3.10.11\x64\Lib\site-packages\share"
+                  $deps = & $dumpbinPath /DEPENDENTS $pyopenmsModule.FullName | Select-String -Pattern "^\s+\S+\.dll"
+                  foreach ($line in $deps) {
+                    $dllName = $line.Line.Trim()
+                    $dllPath = Join-Path $sharePath $dllName
+                    if (Test-Path $dllPath) {
+                      Write-Host "  ✓ $dllName found in share/"
+                    } else {
+                      Write-Host "  ✗ $dllName NOT FOUND in share/ (may be system DLL)"
+                    }
+                  }
+                } else {
+                  Write-Host "ERROR: Could not find dumpbin.exe at: $dumpbinPath"
+                }
               } else {
-                Write-Host "  ✗ $dllName NOT FOUND in share/"
+                Write-Host "ERROR: Could not find Visual Studio installation path"
               }
+            } else {
+              Write-Host "ERROR: vswhere.exe not found"
             }
           } else {
             Write-Host "ERROR: Could not find _pyopenms_1.pyd"
