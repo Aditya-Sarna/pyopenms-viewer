@@ -27,7 +27,7 @@ jobs:
           pip install pyinstaller
           pip install -e ".[native]"
 
-      - name: Create DLL loader script for PyInstaller
+      - name: Prepare DLL search paths for PyInstaller
         shell: pwsh
         run: |
           $pythonPath = (Get-Command python).Source
@@ -35,34 +35,32 @@ jobs:
           $sitePackages = Join-Path $pythonDir "Lib\site-packages"
           $shareDir = Join-Path $sitePackages "share"
           
-          Write-Host "Creating sitecustomize.py to add DLL directory on Python startup"
+          Write-Host "Configuring DLL search paths for pyopenms"
           
-          # Create sitecustomize.py content
-          $line1 = "import os"
-          $line2 = "import sys"
-          $line3 = "# Add OpenMS DLL directory for Python 3.8+ DLL loading"
-          $line4 = "share_dir = r'$shareDir'"
-          $line5 = "if hasattr(os, 'add_dll_directory') and os.path.exists(share_dir):"
-          $line6 = "    os.add_dll_directory(share_dir)"
-          $line7 = "    print(f'Added DLL directory: {share_dir}')"
-          
-          $content = "$line1`n$line2`n$line3`n$line4`n$line5`n$line6`n$line7"
-          
-          $sitecustomizePath = Join-Path $sitePackages "sitecustomize.py"
-          Set-Content -Path $sitecustomizePath -Value $content -Encoding UTF8
-          Write-Host "Created sitecustomize.py"
-          Get-Content $sitecustomizePath
-          
-          # Also add to PATH as fallback
-          Write-Host "`nAdding to PATH: $shareDir"
-          echo "$shareDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # Add share directory to PATH so DLLs are findable during build
+          # This affects both the main process and any subprocesses
+          Write-Host "Adding to PATH: $shareDir"
+          $env:PATH = "$shareDir;$env:PATH"
+          echo "PATH=$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           
           # Verify DLLs exist
           Write-Host "`nDLLs in share directory:"
           Get-ChildItem $shareDir -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 15 Name
 
       - name: Build Windows EXE
-        run: pyinstaller --noconfirm pyopenms-viewer-windows.spec
+        shell: pwsh
+        run: |
+          # Ensure PATH includes share directory
+          $pythonPath = (Get-Command python).Source
+          $pythonDir = Split-Path $pythonPath
+          $sitePackages = Join-Path $pythonDir "Lib\site-packages"
+          $shareDir = Join-Path $sitePackages "share"
+          $env:PATH = "$shareDir;$env:PATH"
+          
+          Write-Host "Building with PyInstaller..."
+          Write-Host "PATH includes: $($env:PATH.Split(';')[0..2] -join ';')"
+          
+          pyinstaller --noconfirm pyopenms-viewer-windows.spec
 
       - name: Verify dist contents
         run: Get-ChildItem dist
