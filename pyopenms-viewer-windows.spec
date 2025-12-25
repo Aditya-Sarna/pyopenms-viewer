@@ -59,9 +59,9 @@ if sys.platform == 'win32':
         # APPROACH 4: Test if OpenMS.dll is accessible
         openms_dll = os.path.join(pyopenms_dir, 'OpenMS.dll')
         if os.path.exists(openms_dll):
-            print(f"[SPEC EARLY] ✓ Found OpenMS.dll at: {openms_dll}", flush=True)
+            print(f"[SPEC EARLY] OK - Found OpenMS.dll at: {openms_dll}", flush=True)
         else:
-            print(f"[SPEC EARLY] ✗ ERROR: OpenMS.dll not found at: {openms_dll}", flush=True)
+            print(f"[SPEC EARLY] ERROR - OpenMS.dll not found at: {openms_dll}", flush=True)
             
     except Exception as e:
         print(f"[SPEC EARLY] ERROR: Failed to locate pyopenms: {e}", flush=True)
