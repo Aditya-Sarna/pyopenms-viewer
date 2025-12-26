@@ -105,7 +105,6 @@ def test_hook_collects_dlls():
         "endswith('.dll')",   # Must collect DLLs
         "binaries.append",    # Must add to binaries list
         'os.walk',           # Must walk directory tree
-        'pyopenms_qt6',      # Must isolate Qt6 DLLs in subdirectory
     ]
     
     missing = []
@@ -117,7 +116,7 @@ def test_hook_collects_dlls():
         print(f"  ❌ FAIL: Missing required patterns: {missing}")
         return False
     
-    print("  ✅ PASS: Hook has DLL collection logic with Qt6 isolation")
+    print("  ✅ PASS: Hook has DLL collection logic")
     return True
 
 def test_runtime_hook_qt_isolation():
@@ -129,11 +128,11 @@ def test_runtime_hook_qt_isolation():
         content = f.read()
     
     required_patterns = [
-        'PyQt6',  # Must check for PyQt6 in PATH
+        'PyQt6',  # Must check for PyQt6 removal
         'QT_PLUGIN_PATH',  # Must set Qt plugin path
         "os.environ['PATH']",  # Must modify PATH
         'sys._MEIPASS',  # Must use PyInstaller's extraction dir
-        'pyopenms_qt6',  # Must reference Qt6 subdirectory
+        'shutil.rmtree',  # Must delete PyQt6 Qt6/bin directory
     ]
     
     missing = []
