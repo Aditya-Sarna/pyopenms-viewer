@@ -34,11 +34,15 @@ try:
                     # Python source files go to pyopenms directory
                     datas.append((src, dest_dir))
                 elif file.endswith(('.pyd', '.dll', '.so', '.dylib')):
-                    # ALL binaries (DLLs and extension modules) go to ROOT directory
-                    # This is CRITICAL for Windows DLL loading
-                    binaries.append((src, '.'))
-                    if file.endswith('.dll'):
-                        print(f"hook-pyopenms: Found DLL: {file}")
+                    # Isolate Qt6 DLLs in subdirectory to avoid conflicts with PyQt6
+                    if file.startswith('Qt6') and file.endswith('.dll'):
+                        binaries.append((src, 'pyopenms_qt6'))
+                        print(f"hook-pyopenms: Found Qt6 DLL: {file} -> pyopenms_qt6/")
+                    else:
+                        # Other binaries (OpenMS.dll, .pyd, MSVC runtimes) go to ROOT
+                        binaries.append((src, '.'))
+                        if file.endswith('.dll'):
+                            print(f"hook-pyopenms: Found DLL: {file}")
                 elif file.endswith(('.pyi', '.json', '.xml', '.txt', '.dat')):
                     # Data files preserve structure
                     datas.append((src, dest_dir))

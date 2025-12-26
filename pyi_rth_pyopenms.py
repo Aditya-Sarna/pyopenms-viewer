@@ -26,28 +26,40 @@ if getattr(sys, 'frozen', False):
     debug_print("[pyi_rth_pyopenms] Runtime hook starting...")
     
     # sys._MEIPASS is PyInstaller's temporary extraction directory
-    # All DLLs should be here because hook-pyopenms.py places them with binaries.append((src, '.'))
     exe_dir = sys._MEIPASS
     debug_print(f"[pyi_rth_pyopenms] Extraction directory: {exe_dir}")
     
+    # pyopenms Qt6 DLLs are in subdirectory to avoid conflicts with PyQt6
+    pyopenms_qt6_dir = os.path.join(exe_dir, 'pyopenms_qt6')
+    
     # STEP 1: Verify critical DLLs are present
-    critical_dlls = ['OpenMS.dll', 'Qt6Core.dll', 'Qt6Network.dll', 'msvcp140.dll', 'vcomp140.dll']
+    # Qt6 DLLs should be in pyopenms_qt6/, others in exe_dir
+    critical_dlls_root = ['OpenMS.dll', 'msvcp140.dll', 'vcomp140.dll']
+    critical_dlls_qt6 = ['Qt6Core.dll', 'Qt6Network.dll']
+    
     missing_dlls = []
     found_dlls = []
     
-    for dll in critical_dlls:
+    for dll in critical_dlls_root:
         dll_path = os.path.join(exe_dir, dll)
         if os.path.exists(dll_path):
             found_dlls.append(dll)
         else:
-            missing_dlls.append(dll)
+            missing_dlls.append(f"{dll} (root)")
     
-    debug_print(f"[pyi_rth_pyopenms] Found {len(found_dlls)}/{len(critical_dlls)} critical DLLs")
+    for dll in critical_dlls_qt6:
+        dll_path = os.path.join(pyopenms_qt6_dir, dll)
+        if os.path.exists(dll_path):
+            found_dlls.append(f"{dll} (qt6)")
+        else:
+            missing_dlls.append(f"{dll} (qt6)")
+    
+    total = len(critical_dlls_root) + len(critical_dlls_qt6)
+    debug_print(f"[pyi_rth_pyopenms] Found {len(found_dlls)}/{total} critical DLLs")
     if missing_dlls:
-        debug_print(f"[pyi_rth_pyopenms] WARNING: Missing DLLs: {', '.join(missing_dlls)}")
+        debug_print(f"[pyi_rth_pyopenms] WARNING: Missing: {', '.join(missing_dlls)}")
     
-    # STEP 2: PREPEND exe_dir to PATH (ensures pyopenms DLLs are found FIRST)
-    # This is critical to avoid Qt6 DLL conflicts with PyQt6
+    # STEP 2: PREPEND pyopenms_qt6_dir to PATH (Qt6 DLLs loaded FIRST, before PyQt6's)
     current_path = os.environ.get('PATH', '')
     
     # Remove any existing PyQt6 Qt6\bin from PATH to prevent conflicts
@@ -55,17 +67,21 @@ if getattr(sys, 'frozen', False):
     cleaned_parts = [p for p in path_parts if 'PyQt6' not in p and 'Qt6\\bin' not in p and 'Qt6/bin' not in p]
     cleaned_path = os.pathsep.join(cleaned_parts)
     
-    # Prepend our DLL directory
-    os.environ['PATH'] = exe_dir + os.pathsep + cleaned_path
-    debug_print(f"[pyi_rth_pyopenms] PATH updated (PyQt6 Qt6 paths removed, exe_dir prepended)")
+    # Prepend pyopenms Qt6 directory FIRST, then exe_dir
+    os.environ['PATH'] = pyopenms_qt6_dir + os.pathsep + exe_dir + os.pathsep + cleaned_path
+    debug_print(f"[pyi_rth_pyopenms] PATH updated (pyopenms_qt6 prepended, PyQt6 removed)")
     
     # STEP 3: Use Windows DLL search path API (Python 3.8+)
+    # Add pyopenms_qt6 directory FIRST
     if hasattr(os, 'add_dll_directory'):
         try:
+            if os.path.exists(pyopenms_qt6_dir):
+                os.add_dll_directory(pyopenms_qt6_dir)
+                debug_print(f"[pyi_rth_pyopenms] Added DLL dir: pyopenms_qt6/")
             os.add_dll_directory(exe_dir)
-            debug_print(f"[pyi_rth_pyopenms] os.add_dll_directory() succeeded")
+            debug_print(f"[pyi_rth_pyopenms] Added DLL dir: exe_dir")
         except Exception as e:
-            debug_print(f"[pyi_rth_pyopenms] WARNING: os.add_dll_directory() failed: {e}")
+            debug_print(f"[pyi_rth_pyopenms] WARNING: add_dll_directory() failed: {e}")
     
     # STEP 4: Check for Qt6 plugins directory (if collected by hook)
     qt_plugins_dir = os.path.join(exe_dir, 'Qt6', 'plugins')
@@ -74,7 +90,6 @@ if getattr(sys, 'frozen', False):
         os.environ['QT_PLUGIN_PATH'] = qt_plugins_dir
         debug_print(f"[pyi_rth_pyopenms] QT_PLUGIN_PATH set to: {qt_plugins_dir}")
     
-    # STEP 5: Force Qt to use our plugins (not PyQt6's)
     # STEP 5: Force Qt to use our plugins (not PyQt6's)
     # This prevents Qt from loading mismatched plugins from PyQt6
     os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugins_dir if os.path.exists(qt_plugins_dir) else exe_dir
