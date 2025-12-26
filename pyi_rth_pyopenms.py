@@ -1,75 +1,82 @@
 """
 PyInstaller runtime hook for pyopenms.
 
-This hook runs when the frozen application starts, before any user code.
+This hook runs when the frozen application starts, BEFORE any user code.
 It sets up the Windows DLL search path so pyopenms can find its dependency DLLs.
 
-Critical: This must run BEFORE pyopenms is imported. The hook modifies both
-os.add_dll_directory() and PATH environment variable to ensure DLL loading works.
+CRITICAL PROBLEM: PyQt6 and pyopenms both bundle Qt6 DLLs. If both are in PATH,
+Windows may load mismatched Qt6 versions causing symbol resolution failures.
+
+SOLUTION: Ensure pyopenms's DLLs (especially Qt6) are loaded FIRST by modifying
+PATH before any imports happen.
 """
 import os
 import sys
 
-# Debug output with explicit flush to ensure visibility
 def debug_print(msg):
-    print(msg, flush=True)
-    sys.stdout.flush()
-    sys.stderr.flush()
+    """Print with explicit flush and ASCII-only characters for Windows console."""
+    try:
+        print(msg, flush=True)
+        sys.stdout.flush()
+    except Exception:
+        # If even this fails, silently continue
+        pass
 
-# In frozen mode, all DLLs should be in the same directory as the executable
-# because hook-pyopenms.py places them there with: binaries.append((src, '.'))
 if getattr(sys, 'frozen', False):
-    debug_print("[pyi_rth_pyopenms] Runtime hook executing!")
+    debug_print("[pyi_rth_pyopenms] Runtime hook starting...")
     
-    # Get the directory containing the executable
-    exe_dir = sys._MEIPASS  # PyInstaller's temporary extraction directory
-    debug_print(f"[pyi_rth_pyopenms] exe_dir (sys._MEIPASS): {exe_dir}")
+    # sys._MEIPASS is PyInstaller's temporary extraction directory
+    # All DLLs should be here because hook-pyopenms.py places them with binaries.append((src, '.'))
+    exe_dir = sys._MEIPASS
+    debug_print(f"[pyi_rth_pyopenms] Extraction directory: {exe_dir}")
     
-    # List critical DLLs to verify they're present
+    # STEP 1: Verify critical DLLs are present
     critical_dlls = ['OpenMS.dll', 'Qt6Core.dll', 'Qt6Network.dll', 'msvcp140.dll', 'vcomp140.dll']
-    debug_print(f"[pyi_rth_pyopenms] Checking for critical DLLs in {exe_dir}:")
+    missing_dlls = []
+    found_dlls = []
+    
     for dll in critical_dlls:
         dll_path = os.path.join(exe_dir, dll)
         if os.path.exists(dll_path):
-            dll_size = os.path.getsize(dll_path)
-            debug_print(f"[pyi_rth_pyopenms]   ✓ {dll} ({dll_size:,} bytes)")
+            found_dlls.append(dll)
         else:
-            debug_print(f"[pyi_rth_pyopenms]   ✗ {dll} NOT FOUND")
+            missing_dlls.append(dll)
     
-    # CRITICAL: Add to PATH first (this affects LoadLibrary calls)
-    # Windows searches PATH for DLLs when loading extension modules
+    debug_print(f"[pyi_rth_pyopenms] Found {len(found_dlls)}/{len(critical_dlls)} critical DLLs")
+    if missing_dlls:
+        debug_print(f"[pyi_rth_pyopenms] WARNING: Missing DLLs: {', '.join(missing_dlls)}")
+    
+    # STEP 2: PREPEND exe_dir to PATH (ensures pyopenms DLLs are found FIRST)
+    # This is critical to avoid Qt6 DLL conflicts with PyQt6
     current_path = os.environ.get('PATH', '')
-    if exe_dir not in current_path:
-        os.environ['PATH'] = exe_dir + os.pathsep + current_path
-        debug_print(f"[pyi_rth_pyopenms] Added exe_dir to PATH")
     
-    # Add the executable directory to DLL search path
-    # This is the Windows-specific API for DLL loading (Python 3.8+)
-    if hasattr(os, 'add_dll_directory') and os.path.exists(exe_dir):
+    # Remove any existing PyQt6 Qt6\bin from PATH to prevent conflicts
+    path_parts = current_path.split(os.pathsep)
+    cleaned_parts = [p for p in path_parts if 'PyQt6' not in p and 'Qt6\\bin' not in p and 'Qt6/bin' not in p]
+    cleaned_path = os.pathsep.join(cleaned_parts)
+    
+    # Prepend our DLL directory
+    os.environ['PATH'] = exe_dir + os.pathsep + cleaned_path
+    debug_print(f"[pyi_rth_pyopenms] PATH updated (PyQt6 Qt6 paths removed, exe_dir prepended)")
+    
+    # STEP 3: Use Windows DLL search path API (Python 3.8+)
+    if hasattr(os, 'add_dll_directory'):
         try:
             os.add_dll_directory(exe_dir)
-            debug_print(f"[pyi_rth_pyopenms] os.add_dll_directory({exe_dir}) succeeded")
+            debug_print(f"[pyi_rth_pyopenms] os.add_dll_directory() succeeded")
         except Exception as e:
-            debug_print(f"[pyi_rth_pyopenms] WARNING: os.add_dll_directory failed: {e}")
+            debug_print(f"[pyi_rth_pyopenms] WARNING: os.add_dll_directory() failed: {e}")
     
-    # Also check if there's a 'share' subdirectory (fallback)
-    share_dir = os.path.join(exe_dir, 'share')
-    if os.path.exists(share_dir):
-        debug_print(f"[pyi_rth_pyopenms] Found share directory: {share_dir}")
-        
-        # Add to PATH
-        if share_dir not in os.environ.get('PATH', ''):
-            os.environ['PATH'] = share_dir + os.pathsep + os.environ['PATH']
-            debug_print(f"[pyi_rth_pyopenms] Added share_dir to PATH")
-        
-        # Add to DLL search
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(share_dir)
-                debug_print(f"[pyi_rth_pyopenms] os.add_dll_directory({share_dir}) succeeded")
-            except Exception as e:
-                debug_print(f"[pyi_rth_pyopenms] WARNING: Could not add share to DLL search: {e}")
-    else:
-        debug_print(f"[pyi_rth_pyopenms] No share directory found (not an error - DLLs might be in root)")
+    # STEP 4: Check for Qt6 plugins directory (if collected by hook)
+    qt_plugins_dir = os.path.join(exe_dir, 'Qt6', 'plugins')
+    if os.path.exists(qt_plugins_dir):
+        # Set Qt plugin path environment variable
+        os.environ['QT_PLUGIN_PATH'] = qt_plugins_dir
+        debug_print(f"[pyi_rth_pyopenms] QT_PLUGIN_PATH set to: {qt_plugins_dir}")
     
-    debug_print("[pyi_rth_pyopenms] Runtime hook completed")
+    # STEP 5: Force Qt to use our plugins (not PyQt6's)
+    # STEP 5: Force Qt to use our plugins (not PyQt6's)
+    # This prevents Qt from loading mismatched plugins from PyQt6
+    os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugins_dir if os.path.exists(qt_plugins_dir) else exe_dir
+    
+    debug_print("[pyi_rth_pyopenms] Runtime hook completed successfully")

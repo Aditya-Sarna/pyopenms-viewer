@@ -1,84 +1,119 @@
 # PyInstaller hook for pyopenms
-# Collect the entire package (dylibs, data files, hidden imports) so that the
-# bundled app ships every dependency required by libOpenMS and Qt.
+# Collect the entire package (dylibs, data files, hidden imports) WITHOUT importing it.
+# This avoids build-time DLL loading failures on Windows.
 
-from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, get_package_paths
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs, get_package_paths, collect_submodules
 import os
 import sys
 import glob
 
-datas, binaries, hiddenimports = collect_all('pyopenms')
+# CRITICAL: DO NOT use collect_all() as it may try to import pyopenms
+# which fails on Windows due to DLL dependencies during build.
+# Instead, manually collect files without importing.
 
-# Explicitly collect dynamic libraries from pyopenms package
-# This is critical on Windows where DLLs may not be picked up by collect_all
-binaries += collect_dynamic_libs('pyopenms')
+datas = []
+binaries = []
+hiddenimports = []
 
 # Find pyopenms installation directory without importing it
-# (importing may fail if DLLs aren't in PATH during build)
 try:
     pkg_base, pkg_dir = get_package_paths('pyopenms')
     
-    # Collect ALL files from pyopenms directory
+    # Collect ALL files from pyopenms directory WITHOUT importing
     if os.path.exists(pkg_dir):
-        print(f"hook-pyopenms: Collecting from {pkg_dir}")
+        print(f"hook-pyopenms: Collecting from {pkg_dir} (no import)")
         
-        # First pass: collect ALL DLLs (including Qt6, OpenMS, etc.)
-        all_dlls = glob.glob(os.path.join(pkg_dir, '*.dll'))
-        for dll_path in all_dlls:
-            dll_name = os.path.basename(dll_path)
-            print(f"hook-pyopenms: Found DLL: {dll_name}")
-            # Add to binaries, placing in root directory
-            if not any(dll_path == b[0] for b in binaries):
-                binaries.append((dll_path, '.'))
-                print(f"hook-pyopenms: Collecting {dll_name}")
-        
-        # Second pass: collect all other files
+        # Collect all Python files as datas to preserve package structure
         for root, dirs, files in os.walk(pkg_dir):
             for file in files:
                 src = os.path.join(root, file)
-                # Get path relative to pyopenms package (not site-packages)
                 rel_path = os.path.relpath(root, pkg_dir)
                 dest_dir = os.path.join('pyopenms', rel_path) if rel_path != '.' else 'pyopenms'
                 
-                # Add binaries to binaries list (they go to root of frozen app)
-                # Add data files to datas list (preserving structure)
-                if file.endswith(('.pyd', '.dll', '.so', '.dylib', '.exe')):
-                    if not any(src == b[0] for b in binaries):
-                        binaries.append((src, '.'))  # Place DLLs in root for easier loading
-                else:
-                    # Only add data files that aren't already collected
-                    if not any(src == d[0] for d in datas):
-                        datas.append((src, dest_dir))
+                if file.endswith('.py'):
+                    # Python source files go to pyopenms directory
+                    datas.append((src, dest_dir))
+                elif file.endswith(('.pyd', '.dll', '.so', '.dylib')):
+                    # ALL binaries (DLLs and extension modules) go to ROOT directory
+                    # This is CRITICAL for Windows DLL loading
+                    binaries.append((src, '.'))
+                    if file.endswith('.dll'):
+                        print(f"hook-pyopenms: Found DLL: {file}")
+                elif file.endswith(('.pyi', '.json', '.xml', '.txt', '.dat')):
+                    # Data files preserve structure
+                    datas.append((src, dest_dir))
+        
+        # CRITICAL: Manually collect Qt6 plugins that pyopenms needs
+        # These are in pyopenms's Qt6 installation, not PyQt6's
+        qt_plugins_dir = os.path.join(pkg_dir, 'Qt6', 'plugins')
+        if os.path.exists(qt_plugins_dir):
+            print(f"hook-pyopenms: Collecting Qt6 plugins from {qt_plugins_dir}")
+            for root, dirs, files in os.walk(qt_plugins_dir):
+                for file in files:
+                    if file.endswith('.dll'):
+                        src = os.path.join(root, file)
+                        # Preserve plugins directory structure: Qt6/plugins/platforms/qwindows.dll
+                        rel_path = os.path.relpath(root, pkg_dir)
+                        binaries.append((src, rel_path))
+                        print(f"hook-pyopenms: Found Qt6 plugin: {file}")
     
-    # Also check for share/ directory at site-packages level (OpenMS THIRDPARTY libs)
-    # These DLLs are CRITICAL for pyopenms on Windows
+    # Also collect share/ directory if it exists (OpenMS THIRDPARTY libs)
     share_dir = os.path.join(pkg_base, 'share')
     if os.path.exists(share_dir):
-        print(f"hook-pyopenms: Collecting OpenMS libraries from {share_dir}")
+        print(f"hook-pyopenms: Collecting from share directory: {share_dir}")
         for root, dirs, files in os.walk(share_dir):
             for file in files:
                 src = os.path.join(root, file)
-                # For DLLs in share/, put them in root directory for easier loading
-                # For data files, preserve directory structure
-                if file.endswith(('.dll', '.so', '.dylib', '.exe')):
-                    if not any(src == b[0] for b in binaries):
-                        binaries.append((src, '.'))  # Root directory
-                        print(f"hook-pyopenms: Collecting binary {file} from share/")
+                if file.endswith(('.dll', '.so', '.dylib')):
+                    # Share DLLs also go to root
+                    binaries.append((src, '.'))
+                    print(f"hook-pyopenms: Found share DLL: {file}")
                 else:
+                    # Preserve directory structure for data files
                     rel_path = os.path.relpath(root, pkg_base)
-                    if not any(src == d[0] for d in datas):
-                        datas.append((src, rel_path))
+                    datas.append((src, rel_path))
     
-    print(f"hook-pyopenms: Total binaries collected: {len([b for b in binaries if b[0].endswith('.dll')])}")
+    # Discover hidden imports by scanning __init__.py without importing
+    # This avoids the import-time DLL failure
+    init_file = os.path.join(pkg_dir, '__init__.py')
+    if os.path.exists(init_file):
+        with open(init_file, 'r') as f:
+            content = f.read()
+            # Look for common import patterns
+            if '_pyopenms' in content:
+                hiddenimports.append('pyopenms._pyopenms_1')
+            if 'version' in content:
+                hiddenimports.append('pyopenms.version')
+            if 'Constants' in content:
+                hiddenimports.append('pyopenms.Constants')
+    
+    dll_count = len([b for b in binaries if b[0].endswith('.dll')])
+    pyd_count = len([b for b in binaries if b[0].endswith('.pyd')])
+    print(f"hook-pyopenms: Collected {dll_count} DLLs and {pyd_count} extension modules")
+    print(f"hook-pyopenms: Total binaries: {len(binaries)}, datas: {len(datas)}")
+
     
 except Exception as e:
     # If we can't locate pyopenms, log it but don't fail
-    print(f"Warning: Could not fully collect pyopenms files: {e}")
+    print(f"hook-pyopenms ERROR: Could not collect pyopenms files: {e}")
+    import traceback
+    traceback.print_exc()
 
 # Ensure all hidden imports for pyopenms submodules
+# These are critical for runtime but we collect them WITHOUT importing
 hiddenimports += [
     'pyopenms',
-    'pyopenms._pyopenms_1',
+    'pyopenms._pyopenms_1',  # Main extension module
+    'pyopenms._pyopenms_2',  # Additional extension modules
+    'pyopenms._pyopenms_3',
+    'pyopenms._pyopenms_4',
+    'pyopenms._pyopenms_5',
     'pyopenms.version',
+    'pyopenms.Constants',
+    'pyopenms.plotting',
 ]
+
+# CRITICAL: Exclude imports that would trigger pyopenms to load during build
+# We only want to collect files, not actually import the module
+excludedimports = []
 
