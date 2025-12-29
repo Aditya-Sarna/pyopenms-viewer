@@ -38,10 +38,17 @@ jobs:
           pip install -e ".[native]"
       - name: Build native app (Windows)
         if: runner.os == 'Windows'
-        run: >-
-          pyinstaller --noconfirm --onefile --windowed --name pyopenms-viewer
-          --collect-all pyopenms --collect-all plotly --additional-hooks-dir=.
-          pyopenms_viewer/__main__.py
+        shell: bash
+        run: |
+          python -m PyInstaller --noconfirm --onedir --windowed --name pyopenms-viewer \
+            --collect-all pyopenms --collect-all plotly --additional-hooks-dir=. \
+            pyopenms_viewer/__main__.py
+
+      - name: Package Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\* -DestinationPath dist\pyopenms-viewer-windows.zip
       - name: Build native app (macOS)
         if: runner.os == 'macOS'
         run: |
