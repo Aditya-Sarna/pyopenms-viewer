@@ -39,6 +39,9 @@ if sys.platform == 'win32':
     except Exception as e:
         print(f"[SPEC] ERROR: Failed to configure pyopenms paths: {e}", flush=True)
 
+# Get the directory containing this spec file (project root)
+spec_dir = os.path.dirname(os.path.abspath(SPEC))
+
 datas = []
 binaries = []
 hiddenimports = []
@@ -73,19 +76,75 @@ hiddenimports += [
     'pyopenms.plotting',
 ]
 
+# Add explicit hidden imports for pyopenms_viewer package
+# This ensures all submodules are bundled even if not directly imported at top level
+hiddenimports += [
+    'pyopenms_viewer',
+    'pyopenms_viewer.app',
+    'pyopenms_viewer.cli',
+    # Core modules
+    'pyopenms_viewer.core',
+    'pyopenms_viewer.core.state',
+    'pyopenms_viewer.core.events',
+    'pyopenms_viewer.core.config',
+    'pyopenms_viewer.core.data_manager',
+    # Loaders
+    'pyopenms_viewer.loaders',
+    'pyopenms_viewer.loaders.mzml_loader',
+    'pyopenms_viewer.loaders.feature_loader',
+    'pyopenms_viewer.loaders.id_loader',
+    'pyopenms_viewer.loaders.chromatogram_loader',
+    'pyopenms_viewer.loaders.ion_mobility_loader',
+    'pyopenms_viewer.loaders.spectrum_extractor',
+    # Panels
+    'pyopenms_viewer.panels',
+    'pyopenms_viewer.panels.base_panel',
+    'pyopenms_viewer.panels.spectrum_panel',
+    'pyopenms_viewer.panels.chromatogram_panel',
+    'pyopenms_viewer.panels.peak_map_panel',
+    'pyopenms_viewer.panels.tic_panel',
+    'pyopenms_viewer.panels.spectra_table_panel',
+    'pyopenms_viewer.panels.features_table_panel',
+    'pyopenms_viewer.panels.im_peak_map_panel',
+    'pyopenms_viewer.panels.faims_panel',
+    # Annotation
+    'pyopenms_viewer.annotation',
+    'pyopenms_viewer.annotation.spectrum_annotator',
+    'pyopenms_viewer.annotation.theoretical_spectrum',
+    'pyopenms_viewer.annotation.tick_formatter',
+    # Rendering
+    'pyopenms_viewer.rendering',
+    'pyopenms_viewer.rendering.peak_map_renderer',
+    'pyopenms_viewer.rendering.axis_renderer',
+    'pyopenms_viewer.rendering.minimap_renderer',
+    'pyopenms_viewer.rendering.overlay_renderer',
+    # Components and Utils
+    'pyopenms_viewer.components',
+    'pyopenms_viewer.components.local_file_picker',
+    'pyopenms_viewer.utils',
+    'pyopenms_viewer.utils.coordinate_transform',
+]
+
 print(f"[SPEC] Starting Analysis with {len(binaries)} binaries, {len(datas)} datas", flush=True)
 
 
 a = Analysis(
     ['pyopenms_viewer/__main__.py'],
-    pathex=[],
+    pathex=[spec_dir],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=['.', 'pre_safe_import_module'],  # Include both standard hooks and pre-safe-import hooks
     hooksconfig={},
     runtime_hooks=['pyi_rth_pyopenms.py'],
-    excludes=[],
+    excludes=[
+        # Exclude PyQt6 WebEngine components - not needed and causes DLL extraction failures
+        'PyQt6.QtWebEngine',
+        'PyQt6.QtWebEngineCore',
+        'PyQt6.QtWebEngineWidgets',
+        'PyQt6.QtWebEngineQuick',
+        'PyQt6.QtWebChannel',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -103,7 +162,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # Disable UPX - can cause issues with Qt DLLs
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
