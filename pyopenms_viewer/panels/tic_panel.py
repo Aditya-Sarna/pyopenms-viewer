@@ -110,7 +110,11 @@ class TICPanel(BasePanel):
         )
 
         # Add selected spectrum marker
-        if self.state.selected_spectrum_idx is not None and self.state.exp is not None:
+        if (
+            self.state.selected_spectrum_idx is not None
+            and self.state.exp is not None
+            and 0 <= self.state.selected_spectrum_idx < len(self.state.exp)
+        ):
             spec = self.state.exp[self.state.selected_spectrum_idx]
             marker_rt = spec.getRT() / rt_divisor
             fig.add_vline(
@@ -205,6 +209,10 @@ class TICPanel(BasePanel):
 
             # Select spectrum (triggers spectrum panel update)
             self.state.select_spectrum(best_idx)
+
+            # Also select nearest IM frame if ion mobility data is present
+            if self.state.has_ion_mobility and self.state.im_frame_indices:
+                self.state.select_nearest_im_frame(clicked_rt)
 
             # Also center the peak map on this RT (matching original behavior)
             rt_range = self.state.view_rt_max - self.state.view_rt_min

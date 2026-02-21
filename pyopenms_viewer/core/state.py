@@ -8,6 +8,7 @@ MEMORY SAFETY: Data structures are stored as references, never copied.
 Components access data via properties that return references or views (masks).
 """
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -111,6 +112,9 @@ class ViewerState:
         self.tic_source: str = "MS1 TIC"  # Description (e.g., "MS1 TIC", "MS2 BPC")
         self.faims_tic: dict[float, tuple[np.ndarray, np.ndarray]] = {}  # CV -> (rt, intensity)
 
+        # ========== PEAK COUNT ==========
+        self.total_peaks: int = 0  # Total MS1 peaks (set by loader)
+
         # ========== DATA BOUNDS (full extent) ==========
         self.rt_min: float = 0.0
         self.rt_max: float = 1.0
@@ -134,13 +138,25 @@ class ViewerState:
         self.faims_cvs: list[float] = []
         self.im_type: Optional[str] = None  # "ion mobility", "inverse reduced ion mobility", etc.
         self.im_unit: str = ""
+        self.selected_im_frame_idx: Optional[int] = None  # Index into exp for selected IM frame
+        self.im_frame_indices: list[int] = []  # MS1 IM frame indices in exp
+        self.im_frame_rts: Optional[np.ndarray] = None  # Parallel RT values (sorted)
         self.show_faims_view: bool = False
         self.selected_faims_cv: Optional[float] = None  # Currently selected CV for filtering peak map
+        self.faims_experiments: dict = {}  # CV -> MSExperiment (MS1 only, for rasterization)
+        self.faims_minimap_rasters: dict = {}  # CV -> cached np.ndarray minimap raster
 
         # ========== FILE PATHS ==========
         self.current_file: Optional[str] = None
         self.features_file: Optional[str] = None
         self.id_file: Optional[str] = None
+        # Tracks files currently being loaded to avoid duplicate concurrent loads
+        self._loading_files: set[str] = set()
+        # Thread-safe events for threads waiting on an in-progress load
+        self._loading_events: dict[str, threading.Event] = {}
+        self._loading_events_lock = threading.Lock()
+        # Progress information for background loads: filepath -> (message, progress)
+        self.load_progress: dict[str, tuple[str, float]] = {}
 
         # ========== SELECTION STATE ==========
         self.selected_spectrum_idx: Optional[int] = None
@@ -177,6 +193,7 @@ class ViewerState:
         self.show_spectrum_marker: bool = DEFAULTS.SHOW_SPECTRUM_MARKER
         self.swap_axes: bool = DEFAULTS.SWAP_AXES
         self.colormap: str = DEFAULTS.COLORMAP
+        self.im_colormap: str = DEFAULTS.COLORMAP
         self.rt_in_minutes: bool = DEFAULTS.RT_IN_MINUTES
         self.spectrum_intensity_percent: bool = DEFAULTS.SPECTRUM_INTENSITY_PERCENT
         self.spectrum_auto_scale: bool = DEFAULTS.SPECTRUM_AUTO_SCALE
@@ -234,6 +251,15 @@ class ViewerState:
         self._updating_from_tic: bool = False
         self._hover_update_pending: bool = False
 
+        # ========== ALGORITHM LOG ==========
+        self.log_messages: list[str] = []
+
+        # ========== RASTERIZATION CACHE ==========
+        self.cached_minimap_raster: Optional[np.ndarray] = None  # Cached minimap rasterization
+        self.temp_peak_df: Optional[pd.DataFrame] = None  # Temporary DataFrame for deep zoom/3D view
+        self.last_3d_view_bounds: Optional[tuple] = None  # View bounds when 3D was last updated
+        self.is_3d_in_sync: bool = True  # Whether 3D view matches current 2D view
+
     # ========== COMPUTED PROPERTIES ==========
 
     @property
@@ -286,6 +312,19 @@ class ViewerState:
         if self.data_manager is None:
             return 0.0
         return self.data_manager.get_cache_size_mb()
+
+    def invalidate_minimap_cache(self) -> None:
+        """Clear cached minimap raster when new file is loaded.
+
+        This should be called whenever:
+        - A new mzML file is loaded
+        - Data bounds change significantly
+
+        The cache stores the raw rasterized numpy array, allowing efficient
+        re-shading with different colormaps without re-rasterization.
+        """
+        self.cached_minimap_raster = None
+        self.faims_minimap_rasters = {}
 
     # ========== VIEW ACCESSORS (return views, not copies) ==========
 
@@ -370,6 +409,87 @@ class ViewerState:
         )
         return self.im_df[mask]
 
+    def get_im_frame_spectrum(self):
+        """Get the currently selected IM frame spectrum.
+
+        Returns:
+            MSSpectrum object for the selected frame, or None if no frame selected
+        """
+        if self.exp is None or self.selected_im_frame_idx is None:
+            return None
+        if self.selected_im_frame_idx < 0 or self.selected_im_frame_idx >= len(self.exp):
+            return None
+        return self.exp[self.selected_im_frame_idx]
+
+    def select_nearest_im_frame(self, rt: float) -> None:
+        """Select the IM frame nearest to the given RT value using binary search.
+
+        Args:
+            rt: Retention time in seconds to find nearest frame for
+        """
+        if self.im_frame_rts is None or len(self.im_frame_rts) == 0:
+            return
+        idx = int(np.searchsorted(self.im_frame_rts, rt))
+        # Check neighbors for closest
+        if idx >= len(self.im_frame_rts):
+            idx = len(self.im_frame_rts) - 1
+        elif idx > 0:
+            if abs(self.im_frame_rts[idx - 1] - rt) < abs(self.im_frame_rts[idx] - rt):
+                idx -= 1
+        self.selected_im_frame_idx = self.im_frame_indices[idx]
+
+    def get_faims_peaks_for_cv(
+        self, cv: float, rt_min: float, rt_max: float, mz_min: float, mz_max: float
+    ) -> pd.DataFrame:
+        """Extract FAIMS peaks for a specific CV value on-demand.
+
+        Uses get2DPeakDataIMLong() to extract peaks from the experiment,
+        then filters by CV (which is stored as ion_mobility in pyOpenMS).
+
+        Args:
+            cv: Compensation voltage value to filter by
+            rt_min: Minimum RT for extraction
+            rt_max: Maximum RT for extraction
+            mz_min: Minimum m/z for extraction
+            mz_max: Maximum m/z for extraction
+
+        Returns:
+            DataFrame with columns: rt, mz, intensity, log_intensity
+            Only peaks matching the specified CV are included.
+        """
+        if self.exp is None:
+            return pd.DataFrame()
+
+        try:
+            # Extract all peaks in bounds using get2DPeakDataIMLong
+            # Returns: (rt_array, mz_array, intensity_array, ion_mobility_array)
+            # ion_mobility stores the CV value for FAIMS data
+            rt_array, mz_array, intensity_array, cv_array = self.exp.get2DPeakDataIMLong(
+                rt_min, rt_max, mz_min, mz_max, ms_level=1
+            )
+
+            # Filter by CV (ion_mobility == cv)
+            # Use numpy operations for efficiency
+            mask = np.isclose(cv_array, cv, atol=0.01)  # Allow small tolerance for floating point
+            rt_filtered = rt_array[mask]
+            mz_filtered = mz_array[mask]
+            intensity_filtered = intensity_array[mask]
+
+            # Create DataFrame
+            result_df = pd.DataFrame(
+                {
+                    "rt": rt_filtered,
+                    "mz": mz_filtered,
+                    "intensity": intensity_filtered,
+                    "log_intensity": np.log1p(intensity_filtered),
+                }
+            )
+
+            return result_df
+        except Exception:
+            # If extraction fails, return empty DataFrame
+            return pd.DataFrame()
+
     def get_view_bounds(self) -> ViewBounds:
         """Get current view bounds as a ViewBounds object."""
         return ViewBounds(
@@ -391,6 +511,64 @@ class ViewerState:
             im_min=self.im_min,
             im_max=self.im_max,
         )
+
+    def should_use_rasterization(self, rt_range: float, mz_range: float) -> bool:
+        """Determine if rasterization rendering should be used based on view range.
+
+        Implements the logic for choosing between rasterization and point rendering:
+        - If either threshold is 0: always use rasterization
+        - If RT range < threshold AND mz range < threshold: use point rendering (better for deep zoom)
+        - Otherwise: use rasterization (better for wide views)
+
+        Args:
+            rt_range: Current RT range in seconds (view_rt_max - view_rt_min)
+            mz_range: Current m/z range (view_mz_max - view_mz_min)
+
+        Returns:
+            True to use rasterization, False to use point rendering
+        """
+        rt_threshold = DEFAULTS.DEEP_ZOOM_RT_THRESHOLD
+        mz_threshold = DEFAULTS.DEEP_ZOOM_MZ_THRESHOLD
+
+        # If threshold is 0, always rasterize
+        if rt_threshold == 0 or mz_threshold == 0:
+            return True
+
+        # Below both thresholds: use point rendering (more responsive for deep zoom)
+        if rt_range < rt_threshold and mz_range < mz_threshold:
+            return False
+
+        # Otherwise: use rasterization
+        return True
+
+    def should_use_point_rendering(self) -> bool:
+        """Return True if point rendering should be used, False if rasterization should be used.
+
+        Determines rendering mode based on current view bounds:
+        - If threshold is 0: never use points (always rasterize)
+        - If BOTH ranges are below their respective thresholds: use point rendering (better for deep zoom)
+        - Otherwise: use rasterization (better for wide views)
+
+        Returns:
+            True if point rendering should be used, False if rasterization should be used
+        """
+        rt_threshold = DEFAULTS.DEEP_ZOOM_RT_THRESHOLD
+        mz_threshold = DEFAULTS.DEEP_ZOOM_MZ_THRESHOLD
+
+        # If threshold is 0, always use rasterization (point rendering = False)
+        if rt_threshold == 0 or mz_threshold == 0:
+            return False
+
+        # Calculate current ranges from view bounds
+        rt_range = (
+            self.view_rt_max - self.view_rt_min if self.view_rt_max is not None and self.view_rt_min is not None else 0
+        )
+        mz_range = (
+            self.view_mz_max - self.view_mz_min if self.view_mz_max is not None and self.view_mz_min is not None else 0
+        )
+
+        # Use point rendering only if BOTH ranges are below threshold
+        return rt_range < rt_threshold and mz_range < mz_threshold
 
     # ========== VIEW MANIPULATION ==========
 
@@ -438,6 +616,54 @@ class ViewerState:
         if emit_event:
             self.emit_view_changed()
 
+    # ========== 3D VIEW SYNCHRONIZATION ==========
+
+    def update_3d_sync_bounds(self) -> None:
+        """Store current view bounds when 3D view is updated.
+
+        This method should be called after updating the 3D visualization
+        to track the view bounds used for 3D rendering, enabling detection
+        of out-of-sync states when the 2D view changes.
+        """
+        self.last_3d_view_bounds = (
+            self.view_rt_min if self.view_rt_min is not None else self.rt_min,
+            self.view_rt_max if self.view_rt_max is not None else self.rt_max,
+            self.view_mz_min if self.view_mz_min is not None else self.mz_min,
+            self.view_mz_max if self.view_mz_max is not None else self.mz_max,
+        )
+        self.is_3d_in_sync = True
+
+    def check_3d_sync(self) -> bool:
+        """Check if 3D view matches current 2D view bounds.
+
+        Uses floating point tolerance (1e-6) to account for rounding errors
+        when panning/zooming.
+
+        Returns:
+            True if 3D view is in sync with 2D view bounds, False otherwise.
+            Also updates self.is_3d_in_sync flag.
+        """
+        if self.last_3d_view_bounds is None:
+            self.is_3d_in_sync = False
+            return False
+
+        last_rt_min, last_rt_max, last_mz_min, last_mz_max = self.last_3d_view_bounds
+
+        # Get current bounds (use view bounds if set, else data bounds)
+        current_rt_min = self.view_rt_min if self.view_rt_min is not None else self.rt_min
+        current_rt_max = self.view_rt_max if self.view_rt_max is not None else self.rt_max
+        current_mz_min = self.view_mz_min if self.view_mz_min is not None else self.mz_min
+        current_mz_max = self.view_mz_max if self.view_mz_max is not None else self.mz_max
+
+        # Allow small tolerance for floating point comparison
+        tolerance = 1e-6
+        rt_matches = abs(current_rt_min - last_rt_min) < tolerance and abs(current_rt_max - last_rt_max) < tolerance
+        mz_matches = abs(current_mz_min - last_mz_min) < tolerance and abs(current_mz_max - last_mz_max) < tolerance
+
+        in_sync = rt_matches and mz_matches
+        self.is_3d_in_sync = in_sync
+        return in_sync
+
     # ========== PANEL VISIBILITY ==========
 
     def should_panel_be_visible(self, panel_id: str) -> bool:
@@ -463,6 +689,10 @@ class ViewerState:
                 return self.has_chromatograms
             elif panel_id == "features_table":
                 return len(self.feature_data) > 0
+            elif panel_id == "export":
+                return self.exp is not None
+            elif panel_id == "log":
+                return len(self.log_messages) > 0
             else:
                 return True
         return True
@@ -527,6 +757,23 @@ class ViewerState:
         """
         self._event_bus.emit("display_options_changed", option_name=option_name, value=value)
 
+    def on_algorithm_log(self, callback: Callable) -> Callable:
+        """Register a callback for algorithm log output.
+
+        Callback signature: callback(algo_name: str, output: str)
+        """
+        return self._event_bus.subscribe("algorithm_log", callback)
+
+    def emit_algorithm_log(self, algo_name: str, output: str) -> None:
+        """Emit algorithm log output event.
+
+        Args:
+            algo_name: Name of the algorithm that produced the output
+            output: Captured stdout/stderr text
+        """
+        self.log_messages.append(f"[{algo_name}]\n{output}")
+        self._event_bus.emit("algorithm_log", algo_name=algo_name, output=output)
+
     # ========== SELECTION HELPERS ==========
 
     def select_spectrum(self, index: Optional[int], emit_event: bool = True) -> None:
@@ -585,8 +832,13 @@ class ViewerState:
         self.has_ion_mobility = False
         self.im_type = None
         self.im_unit = ""
+        self.selected_im_frame_idx = None
+        self.im_frame_indices = []
+        self.im_frame_rts = None
         self.faims_cvs = []
         self.faims_data = {}
+        self.faims_experiments = {}
+        self.faims_minimap_rasters = {}
         self.faims_tic = {}
         self.has_faims = False
         self.show_faims_view = False
@@ -635,6 +887,7 @@ class ViewerState:
         self.clear_mzml_data()
         self.clear_feature_data()
         self.clear_id_data()
+        self.log_messages.clear()
 
     # ========== UI ELEMENT REFERENCES ==========
     # These are set by panels when they build their UI
@@ -720,8 +973,8 @@ class ViewerState:
             zoom_in: True to zoom in, False to zoom out
             emit_event: If True, emit view_changed event
         """
-        # Check if we have data (in-memory or out-of-core mode)
-        if self.df is None and self.data_manager is None:
+        # Check if we have data (in-memory, out-of-core, or rasterization mode)
+        if self.df is None and self.data_manager is None and self.exp is None:
             return
 
         # Save current state to zoom history
@@ -776,8 +1029,8 @@ class ViewerState:
             y_frac: Vertical fraction (0-1) of minimap click
             emit_event: If True, emit view_changed event
         """
-        # Check if we have data (in-memory or out-of-core mode)
-        if self.df is None and self.data_manager is None:
+        # Check if we have data (in-memory, out-of-core, or rasterization mode)
+        if self.df is None and self.data_manager is None and self.exp is None:
             return
 
         # Convert minimap fractions to data coordinates (depends on axis orientation)
@@ -851,8 +1104,8 @@ class ViewerState:
 
     def zoom_in(self, emit_event: bool = True) -> None:
         """Zoom in by 10% on all axes."""
-        # Check if we have data (in-memory or out-of-core mode)
-        if self.df is None and self.data_manager is None:
+        # Check if we have data (in-memory, out-of-core, or rasterization mode)
+        if self.df is None and self.data_manager is None and self.exp is None:
             return
 
         rt_range = (self.view_rt_max - self.view_rt_min) * 0.1
@@ -868,8 +1121,8 @@ class ViewerState:
 
     def zoom_out(self, emit_event: bool = True) -> None:
         """Zoom out by 10% on all axes."""
-        # Check if we have data (in-memory or out-of-core mode)
-        if self.df is None and self.data_manager is None:
+        # Check if we have data (in-memory, out-of-core, or rasterization mode)
+        if self.df is None and self.data_manager is None and self.exp is None:
             return
 
         rt_range = (self.view_rt_max - self.view_rt_min) * 0.1
@@ -891,8 +1144,8 @@ class ViewerState:
             mz_frac: Fraction of m/z range to pan (positive = up)
             emit_event: If True, emit view_changed event
         """
-        # Check if we have data (in-memory or out-of-core mode)
-        if self.df is None and self.data_manager is None:
+        # Check if we have data (in-memory, out-of-core, or rasterization mode)
+        if self.df is None and self.data_manager is None and self.exp is None:
             return
 
         rt_range = self.view_rt_max - self.view_rt_min

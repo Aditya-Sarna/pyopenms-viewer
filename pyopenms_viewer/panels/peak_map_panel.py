@@ -7,6 +7,8 @@ with interactive mouse controls for zoom, pan, and measurement.
 import time
 from typing import Callable, Optional
 
+import numpy as np
+import pandas as pd
 from nicegui import ui
 from nicegui.events import MouseEventArguments
 
@@ -22,9 +24,14 @@ class PeakMapPanel(BasePanel):
     Features:
     - Datashader-rendered peak map (RT vs m/z)
     - Feature/ID overlay options
-    - Mouse drag-to-zoom, shift+drag to measure, ctrl+drag to pan
-    - Mouse wheel zoom
-    - Minimap navigation
+    - Mouse interactions:
+      * Drag: Select rectangular region to zoom in
+      * Alt+Drag: Pan the view when zoomed in
+      * Shift+Drag: Measure distance (ΔRT and Δm/z) between two points
+      * Scroll wheel: Zoom in/out at cursor position
+      * Double-click: Reset to full view
+    - Minimap navigation: Click to center view
+    - Feature/ID overlay options
     - 3D view toggle
     """
 
@@ -44,6 +51,8 @@ class PeakMapPanel(BasePanel):
         self.scene_3d_container: Optional[ui.column] = None
         self.plot_3d = None
         self.view_3d_status: Optional[ui.label] = None
+        self.view_3d_sync_warning: Optional[ui.label] = None
+        self.view_3d_auto_update_cb: Optional[ui.checkbox] = None
         self.view_3d_btn = None
 
         # Checkboxes for overlay options
@@ -175,12 +184,10 @@ class PeakMapPanel(BasePanel):
             )
 
             # Sequences checkbox
-            self.id_seq_cb = (
-                ui.checkbox("Sequences", value=False, on_change=self._toggle_id_sequences)
-                .props("dense")
-                .classes("text-orange-300")
-            )
-            ui.tooltip("Show peptide sequences on 2D peakmap")
+            with ui.checkbox("Sequences", value=False, on_change=self._toggle_id_sequences).props("dense").classes(
+                "text-orange-300"
+            ) as self.id_seq_cb:
+                ui.tooltip("Show peptide sequences on 2D peakmap")
 
             ui.label("|").classes("text-gray-600 mx-2")
             ui.label("Colormap:").classes("text-xs text-gray-400")
@@ -202,22 +209,18 @@ class PeakMapPanel(BasePanel):
             ui.label("|").classes("text-gray-600 mx-2")
 
             # Swap axes checkbox
-            self.swap_axes_cb = (
-                ui.checkbox("Swap Axes", value=self.state.swap_axes, on_change=self._toggle_swap_axes)
-                .props("dense")
-                .classes("text-purple-400")
-            )
-            ui.tooltip(
-                "When checked: m/z on x-axis, RT on y-axis (default). When unchecked: RT on x-axis, m/z on y-axis."
-            )
+            with ui.checkbox("Swap Axes", value=self.state.swap_axes, on_change=self._toggle_swap_axes).props(
+                "dense"
+            ).classes("text-purple-400") as self.swap_axes_cb:
+                ui.tooltip(
+                    "When checked: m/z on x-axis, RT on y-axis (default). When unchecked: RT on x-axis, m/z on y-axis."
+                )
 
             # Spectrum marker checkbox
-            self.spectrum_marker_cb = (
-                ui.checkbox("Marker", value=self.state.show_spectrum_marker, on_change=self._toggle_spectrum_marker)
-                .props("dense")
-                .classes("text-cyan-400")
-            )
-            ui.tooltip("Show/hide the spectrum position marker (crosshair) on the 2D peakmap.")
+            with ui.checkbox(
+                "Marker", value=self.state.show_spectrum_marker, on_change=self._toggle_spectrum_marker
+            ).props("dense").classes("text-cyan-400") as self.spectrum_marker_cb:
+                ui.tooltip("Show/hide the spectrum position marker (crosshair) on the 2D peakmap.")
 
             ui.element("div").classes("flex-grow")
 
@@ -338,8 +341,8 @@ class PeakMapPanel(BasePanel):
     def _build_help_text(self):
         """Build the help text."""
         ui.label(
-            "Scroll to zoom, drag to select region, Shift+drag to measure, double-click to reset, "
-            "click centroid to select feature"
+            "Scroll to zoom, drag to select region, Alt+drag to pan, Shift+drag to measure, "
+            "double-click to reset, click centroid to select feature"
         ).classes("text-xs text-gray-500 mb-1")
 
     def _build_peak_map_area(self):
@@ -394,6 +397,16 @@ class PeakMapPanel(BasePanel):
 
         with self.scene_3d_container:
             self.view_3d_status = ui.label("").classes("text-xs text-yellow-400")
+
+            # Add out-of-sync warning label
+            self.view_3d_sync_warning = ui.label("").classes("text-xs text-orange-400")
+            self.view_3d_sync_warning.set_visibility(False)
+
+            # Add auto-update checkbox
+            with ui.row().classes("gap-2"):
+                self.view_3d_auto_update_cb = ui.checkbox(
+                    "Auto-update 3D", value=True, on_change=self._on_3d_auto_update_changed
+                ).classes("text-xs")
 
             # Create empty plotly figure for 3D view
             empty_fig = go.Figure()
@@ -459,7 +472,13 @@ class PeakMapPanel(BasePanel):
             return
 
         # Render peak map
-        base64_img = self.peak_map_renderer.render(self.state, fast=False)
+        try:
+            base64_img = self.peak_map_renderer.render(self.state, fast=False)
+        except Exception as e:
+            import sys
+
+            print(f"[ERROR] Peak map render failed: {e}", file=sys.stderr)
+            base64_img = ""
         if base64_img:
             self.image_element.set_source(f"data:image/png;base64,{base64_img}")
 
@@ -497,6 +516,10 @@ class PeakMapPanel(BasePanel):
         Works for both in-memory mode (state.df is not None) and
         out-of-core mode (state.df is None but data_manager has data).
         """
+        # Phase 1 rasterization mode: exp is present even when df is None
+        if self.state.exp is not None and len(self.state.exp) > 0:
+            return True
+        # In-memory mode with DataFrame
         if self.state.df is not None:
             return True
         # Out-of-core mode: check data_manager
@@ -524,6 +547,17 @@ class PeakMapPanel(BasePanel):
                 self.faims_checkbox.set_visibility(self.state.has_faims)
                 if self.state.has_faims:
                     self._create_faims_cv_minimaps()
+                else:
+                    # Clear old FAIMS minimap UI from previous file
+                    self.faims_checkbox.value = False
+                    if self.faims_container is not None:
+                        self.faims_container.clear()
+                    self.faims_cv_minimaps = {}
+                    self.faims_cv_labels = {}
+        elif data_type in ("features", "ids"):
+            # Re-render peak map to show/hide feature or ID overlays
+            if self._has_data():
+                self.update()
 
     def _clear_display(self):
         """Clear the peak map display."""
@@ -537,6 +571,8 @@ class PeakMapPanel(BasePanel):
     def _on_view_changed(self):
         """Handle view changed event."""
         self.update()
+        # Check if 3D view is still in sync and update warning
+        self._check_and_update_3d_sync_warning()
 
     def _on_selection_changed(self, selection_type: str, index):
         """Handle selection changed event - redraw spectrum marker."""
@@ -595,8 +631,14 @@ class PeakMapPanel(BasePanel):
     def _toggle_swap_axes(self):
         """Toggle axis swap."""
         self.state.swap_axes = self.swap_axes_cb.value
+        # Invalidate minimap cache because bin dimensions change with swap_axes
+        self.state.invalidate_minimap_cache()
         if self._has_data():
             self.update()
+            self.update_minimap()
+            # Update 3D view if showing (aspect ratio depends on swap_axes)
+            if self.state.show_3d_view and self.plot_3d is not None:
+                self._update_3d_view()
 
     def _toggle_spectrum_marker(self):
         """Toggle spectrum position marker."""
@@ -830,12 +872,12 @@ class PeakMapPanel(BasePanel):
                 or self.state.view_mz_min > self.state.mz_min + 0.01
                 or self.state.view_mz_max < self.state.mz_max - 0.01
             )
-            self._drag_state["panning"] = e.ctrl and is_zoomed_in
+            self._drag_state["panning"] = e.alt and is_zoomed_in
             self._drag_state["start_x"] = e.image_x
             self._drag_state["start_y"] = e.image_y
 
             # Store initial view bounds for panning
-            if e.ctrl and is_zoomed_in:
+            if e.alt and is_zoomed_in:
                 self._drag_state["pan_rt_min"] = self.state.view_rt_min
                 self._drag_state["pan_rt_max"] = self.state.view_rt_max
                 self._drag_state["pan_mz_min"] = self.state.view_mz_min
@@ -917,7 +959,7 @@ class PeakMapPanel(BasePanel):
             self._handle_zoom_selection(e)
 
     def _handle_feature_click(self, e: MouseEventArguments):
-        """Handle click to select a feature."""
+        """Handle click to select a feature and/or spectrum."""
         # If we have a hovered feature, select it
         if self.state.hover_feature_idx is not None:
             feature_idx = self.state.hover_feature_idx
@@ -944,7 +986,24 @@ class PeakMapPanel(BasePanel):
                     timeout=3000,
                 )
 
-            self.update()
+        # Select nearest spectrum at the clicked RT
+        if self.state.exp is not None:
+            clicked_rt, _ = self._pixel_to_data(e.image_x, e.image_y)
+            best_idx = 0
+            best_diff = float("inf")
+            for i in range(len(self.state.exp)):
+                diff = abs(self.state.exp[i].getRT() - clicked_rt)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_idx = i
+            self.state.select_spectrum(best_idx)
+
+            # Also select nearest IM frame if ion mobility data is present
+            if self.state.has_ion_mobility and self.state.im_frame_indices:
+                self.state.select_nearest_im_frame(clicked_rt)
+                self.state.emit_view_changed()
+
+        self.update()
 
     def _update_coord_display(self, image_x: float, image_y: float):
         """Update the coordinate display label."""
@@ -1043,6 +1102,9 @@ class PeakMapPanel(BasePanel):
         self.state.view_mz_min = new_mz_min
         self.state.view_mz_max = new_mz_max
 
+        # Emit view changed event for 3D sync
+        self.state.emit_view_changed()
+
         # Throttle rendering
         current_time = time.time()
         if current_time - self._drag_state["last_pan_render"] >= 0.05:
@@ -1127,9 +1189,11 @@ class PeakMapPanel(BasePanel):
             self.state.view_mz_min = new_mz_min
             self.state.view_mz_max = new_mz_max
 
+            # Emit view changed event (triggers _on_view_changed -> update)
+            self.state.emit_view_changed()
+
             # Save new state to zoom history
             self.state.push_zoom_history()
-            self.update()
 
     def _on_wheel(self, e):
         """Handle mouse wheel zoom."""
@@ -1145,7 +1209,7 @@ class PeakMapPanel(BasePanel):
                 x_frac = plot_x / self.state.plot_width
                 y_frac = plot_y / self.state.plot_height
                 zoom_in = delta_y < 0
-                self.state.zoom_at_point(x_frac, y_frac, zoom_in)
+                self.state.zoom_at_point(x_frac, y_frac, zoom_in, emit_event=True)
                 self.update()
         except Exception:
             pass
@@ -1176,7 +1240,7 @@ class PeakMapPanel(BasePanel):
     def _on_keyup(self, e):
         """Handle key release during panning."""
         key = e.args.get("key", "")
-        if key == "Control" and self._drag_state["panning"]:
+        if key == "Alt" and self._drag_state["panning"]:
             self._drag_state["dragging"] = False
             self._drag_state["measuring"] = False
             self._drag_state["panning"] = False
@@ -1191,7 +1255,7 @@ class PeakMapPanel(BasePanel):
             offset_y = e.args.get("offsetY", 0)
             x_frac = offset_x / self.state.minimap_width
             y_frac = offset_y / self.state.minimap_height
-            self.state.minimap_click_to_view(x_frac, y_frac)
+            self.state.minimap_click_to_view(x_frac, y_frac, emit_event=True)
             self.update()
         except Exception:
             pass
@@ -1219,13 +1283,71 @@ class PeakMapPanel(BasePanel):
             else:
                 self.view_3d_btn.props("color=grey")
 
+    def _on_3d_auto_update_changed(self):
+        """Handle auto-update checkbox change."""
+        if (
+            hasattr(self, "view_3d_auto_update_cb")
+            and self.view_3d_auto_update_cb is not None
+            and self.view_3d_auto_update_cb.value
+        ):
+            # Auto-update is enabled, update 3D view if showing
+            if self.state.show_3d_view and self._has_data():
+                self._update_3d_view()
+
+    def _check_and_update_3d_sync_warning(self):
+        """Check 3D sync status and update warning label.
+
+        Called when view changes (pan/zoom) to detect if 3D view is out of sync.
+        """
+        if (
+            not self.state.show_3d_view
+            or not hasattr(self, "view_3d_sync_warning")
+            or self.view_3d_sync_warning is None
+        ):
+            return
+
+        # First check if region is too large for 3D
+        if not self._is_small_region():
+            # Region too large - show warning even in auto-update mode
+            self.view_3d_sync_warning.set_text(
+                f"⚠ Out of sync - Zoom in for 3D (need: RT≤{self.state.rt_threshold_3d:.0f}s, m/z≤{self.state.mz_threshold_3d:.0f})"
+            )
+            self.view_3d_sync_warning.set_visibility(True)
+            return
+
+        # Region is small enough - check if 3D is out of sync
+        is_in_sync = self.state.check_3d_sync()
+
+        if is_in_sync:
+            # In sync - hide warning
+            self.view_3d_sync_warning.set_visibility(False)
+        else:
+            # Out of sync - update if auto-update enabled, else show warning
+            if (
+                hasattr(self, "view_3d_auto_update_cb")
+                and self.view_3d_auto_update_cb is not None
+                and self.view_3d_auto_update_cb.value
+            ):
+                self._update_3d_view()
+                # Hide warning after updating
+                self.view_3d_sync_warning.set_visibility(False)
+            else:
+                # Auto-update is disabled, show warning
+                self.view_3d_sync_warning.set_text("⚠ 3D view out of sync")
+                self.view_3d_sync_warning.set_visibility(True)
+
     def _update_3d_view(self):
-        """Update the 3D visualization with current view data using pyopenms-viz."""
+        """Update the 3D visualization with current view data using pyopenms-viz.
+
+        Reuses temporary DataFrames when the 2D view is in sync with the
+        last 3D update to avoid redundant data processing.
+        """
         if not self.state.show_3d_view or self.plot_3d is None or not self._has_data():
             return
 
         # Check if region is small enough
         if not self._is_small_region():
+            # Show message that region is too large
             # Show message that region is too large
             if self.view_3d_status:
                 rt_range = self.state.view_rt_max - self.state.view_rt_min
@@ -1236,26 +1358,67 @@ class PeakMapPanel(BasePanel):
                 )
             return
 
-        # Get peaks in current view
-        df = self.state.df
-        mask = (
-            (df["rt"] >= self.state.view_rt_min)
-            & (df["rt"] <= self.state.view_rt_max)
-            & (df["mz"] >= self.state.view_mz_min)
-            & (df["mz"] <= self.state.view_mz_max)
-        )
-        view_df = df[mask].copy()
+        # Check if temp_peak_df exists and is in sync
+        if self.state.temp_peak_df is not None and self.state.check_3d_sync():
+            # Reuse existing temp_peak_df
+            view_df = self.state.temp_peak_df
+        else:
+            # Phase 6: Try multiple fallback paths to get view DataFrame
+            view_df = None
 
-        if len(view_df) == 0:
+            # Path 1: Try get2DPeakDataLong if exp is available
+            if self.state.exp is not None:
+                try:
+                    rt_array, mz_array, intensity_array = self.state.exp.get2DPeakDataLong(
+                        self.state.view_rt_min,
+                        self.state.view_rt_max,
+                        self.state.view_mz_min,
+                        self.state.view_mz_max,
+                        ms_level=1,
+                    )
+                    view_df = pd.DataFrame(
+                        {
+                            "rt": rt_array,
+                            "mz": mz_array,
+                            "intensity": intensity_array,
+                            "log_intensity": np.log1p(intensity_array),
+                        }
+                    )
+                except Exception:
+                    # Fall through to Path 2
+                    pass
+
+            # Path 2: Fall back to filtering state.df if available
+            if view_df is None and self.state.df is not None:
+                df = self.state.df
+                mask = (
+                    (df["rt"] >= self.state.view_rt_min)
+                    & (df["rt"] <= self.state.view_rt_max)
+                    & (df["mz"] >= self.state.view_mz_min)
+                    & (df["mz"] <= self.state.view_mz_max)
+                )
+                view_df = df[mask].copy()
+
+            # Path 3: Fall back to get_peaks_in_view (out-of-core mode)
+            if view_df is None:
+                view_df = self.state.get_peaks_in_view()
+
+        if view_df is None or len(view_df) == 0:
             if self.view_3d_status:
                 self.view_3d_status.set_text("No peaks in view")
             return
+
+        # Store as temp_peak_df for potential reuse
+        self.state.temp_peak_df = view_df
 
         # Subsample if too many peaks
         num_peaks_total = len(view_df)
         if len(view_df) > self.state.max_3d_peaks:
             view_df = view_df.nlargest(self.state.max_3d_peaks, "intensity")
         num_peaks_shown = len(view_df)
+
+        # Update 3D sync tracking
+        self.state.update_3d_sync_bounds()
 
         try:
             # Use pyopenms-viz for 3D plotting
@@ -1271,6 +1434,25 @@ class PeakMapPanel(BasePanel):
             # Get the plotly figure
             fig = plot.fig
 
+            # Calculate aspect ratio to match 2D peak map visual proportions
+            # pyopenms-viz plots with x=RT, y=m/z regardless of our swap_axes setting
+            # We need to match how RT and m/z are visually mapped in the 2D view
+
+            if self.state.swap_axes:
+                # In 2D: m/z on x-axis (gets plot_width), RT on y-axis (gets plot_height)
+                # In 3D: RT is x-axis, m/z is y-axis
+                # So 3D x-axis (RT) should have visual length proportional to plot_height
+                # And 3D y-axis (m/z) should have visual length proportional to plot_width
+                aspect_x = self.state.plot_height / max(self.state.plot_width, self.state.plot_height)
+                aspect_y = self.state.plot_width / max(self.state.plot_width, self.state.plot_height)
+            else:
+                # In 2D: RT on x-axis (gets plot_width), m/z on y-axis (gets plot_height)
+                # In 3D: RT is x-axis, m/z is y-axis
+                # So 3D x-axis (RT) should have visual length proportional to plot_width
+                # And 3D y-axis (m/z) should have visual length proportional to plot_height
+                aspect_x = self.state.plot_width / max(self.state.plot_width, self.state.plot_height)
+                aspect_y = self.state.plot_height / max(self.state.plot_width, self.state.plot_height)
+
             # Update layout for light/dark mode compatibility
             fig.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
@@ -1282,11 +1464,11 @@ class PeakMapPanel(BasePanel):
                     "zaxis": {"title": "Intensity", "backgroundcolor": "rgba(128,128,128,0.1)", "gridcolor": "#888"},
                     "bgcolor": "rgba(0,0,0,0)",
                     "aspectmode": "manual",
-                    "aspectratio": {"x": 1.5, "y": 1, "z": 0.8},
+                    "aspectratio": {"x": aspect_x, "y": aspect_y, "z": 0.6},
                 },
                 margin={"l": 0, "r": 0, "t": 0, "b": 0},
-                width=self.state.canvas_width,
-                height=500,
+                width=self.state.plot_width + self.state.margin_left + self.state.margin_right,
+                height=self.state.plot_height + self.state.margin_top + self.state.margin_bottom,
                 autosize=False,
                 showlegend=True,
                 legend={"x": 0, "y": 1, "bgcolor": "rgba(128,128,128,0.3)"},

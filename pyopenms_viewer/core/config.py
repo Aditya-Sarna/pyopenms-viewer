@@ -106,6 +106,16 @@ class DEFAULTS:
     CACHE_DIR = None  # Cache directory (None = temp dir)
     CACHE_COMPRESSION = "snappy"  # Compression: snappy, zstd, gzip, none
 
+    # Performance acceleration settings
+    USE_GPU_IF_AVAILABLE = True  # Use cuDF for GPU-accelerated rendering if available
+    USE_DASK_IF_AVAILABLE = True  # Use Dask for multi-threaded CPU rendering if available
+    DASK_N_PARTITIONS = 4  # Number of Dask partitions (typically set to CPU core count)
+
+    # Rasterization settings
+    # If 0: always use rasterization. If non-zero: use point rendering when RT < threshold AND mz < threshold
+    DEEP_ZOOM_RT_THRESHOLD = 60.0  # RT range threshold for point rendering (seconds, 0 = always raster)
+    DEEP_ZOOM_MZ_THRESHOLD = 50.0  # m/z range threshold for point rendering (0 = always raster)
+
     # Colors (RGBA tuples)
     CENTROID_COLOR = (0, 255, 100, 255)
     HOVER_COLOR = (255, 200, 0, 255)  # Orange/yellow for hover highlight
@@ -130,11 +140,14 @@ PANEL_DEFINITIONS = {
     "tic": {"name": "TIC", "icon": "show_chart"},
     "chromatograms": {"name": "Chromatograms", "icon": "timeline"},
     "peakmap": {"name": "2D Peak Map", "icon": "grid_on"},
-    "im_peakmap": {"name": "Ion Mobility Map", "icon": "blur_on"},
+    "im_peakmap": {"name": "Ion Mobility Frame", "icon": "blur_on"},
     "spectrum": {"name": "1D Spectrum", "icon": "ssid_chart"},
     "spectra_table": {"name": "Spectra", "icon": "list"},
     "features_table": {"name": "Features", "icon": "scatter_plot"},
     "custom_range": {"name": "Custom Range", "icon": "tune"},
+    "export": {"name": "Data Export", "icon": "file_download"},
+    "log": {"name": "Algorithm Log", "icon": "terminal"},
+    "scripting": {"name": "Python Scripting", "icon": "code"},
     "legend": {"name": "Help", "icon": "help"},
 }
 
@@ -148,6 +161,9 @@ DEFAULT_PANEL_ORDER = [
     "spectra_table",
     "features_table",
     "custom_range",
+    "export",
+    "log",
+    "scripting",
     "legend",
 ]
 
@@ -162,5 +178,8 @@ DEFAULT_PANEL_VISIBILITY = {
     "spectra_table": True,
     "features_table": "auto",
     "custom_range": True,
+    "export": "auto",
+    "log": "auto",
+    "scripting": "auto",
     "legend": True,
 }

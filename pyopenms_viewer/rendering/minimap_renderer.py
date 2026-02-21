@@ -1,15 +1,17 @@
 """Minimap renderer for overview navigation.
 
 Renders a small overview of the full data extent with a rectangle
-showing the current view bounds.
+showing the current view bounds. Supports cached rasterization for efficient
+re-shading with different colormaps.
 """
 
 import base64
 import io
 from typing import Optional
 
-import datashader as ds
 import datashader.transfer_functions as tf
+import numpy as np
+import xarray as xr
 from PIL import ImageDraw
 
 from pyopenms_viewer.core.config import COLORMAPS, get_colormap_background
@@ -35,59 +37,104 @@ class MinimapRenderer:
     def render(self, state) -> Optional[str]:
         """Render the minimap showing full data extent with view rectangle overlay.
 
+        Uses cached rasterization when available for efficient re-shading with different
+        colormaps. Falls back to datashader point rendering if rasterization is not
+        available.
+
         Args:
             state: ViewerState with data and view bounds
 
         Returns:
             Base64-encoded PNG string, or None if no data
         """
-        # Get data for minimap
-        # If downsampling is enabled, use data_manager's downsampled query
-        # Otherwise, get full data for accurate representation
-        if state.data_manager is not None:
-            if state.peakmap_downsampling:
-                minimap_df = state.data_manager.query_peaks_for_minimap()
-            else:
-                # No downsampling - get all peaks
-                minimap_df = state.data_manager.query_all_peaks()
-        else:
-            minimap_df = state.df
-
-        if minimap_df is None or len(minimap_df) == 0:
+        if state.exp is None:
             return None
+        return self._render_with_rasterization(state)
 
-        # Create minimap canvas - swap axes to match main view
-        if state.swap_axes:
-            # m/z on x-axis, RT on y-axis
-            cvs = ds.Canvas(
-                plot_width=self.width,
-                plot_height=self.height,
-                x_range=(state.mz_min, state.mz_max),
-                y_range=(state.rt_min, state.rt_max),
-            )
-            agg = cvs.points(minimap_df, "mz", "rt", agg=ds.max("log_intensity"))
+    def _render_with_rasterization(self, state) -> Optional[str]:
+        """Render minimap using cached rasterization from pyOpenMS.
+
+        When a FAIMS CV is selected, uses the per-CV experiment and its cached raster
+        instead of the global experiment/cache.
+
+        Args:
+            state: ViewerState with data and view bounds
+
+        Returns:
+            Base64-encoded PNG string, or None if no data
+        """
+        # Select experiment and cache based on FAIMS CV selection
+        if state.has_faims and state.selected_faims_cv is not None:
+            cv = state.selected_faims_cv
+            raster_exp = state.faims_experiments.get(cv)
+            if raster_exp is None:
+                return None
+            cached_raster = state.faims_minimap_rasters.get(cv)
         else:
-            # RT on x-axis, m/z on y-axis (traditional)
-            cvs = ds.Canvas(
-                plot_width=self.width,
-                plot_height=self.height,
-                x_range=(state.rt_min, state.rt_max),
-                y_range=(state.mz_min, state.mz_max),
-            )
-            agg = cvs.points(minimap_df, "rt", "mz", agg=ds.max("log_intensity"))
+            raster_exp = state.exp
+            cached_raster = state.cached_minimap_raster
 
-        # Apply color map with linear scaling
-        img = tf.shade(agg, cmap=COLORMAPS[state.colormap], how="linear")
-        img = tf.dynspread(img, threshold=0.5, max_px=2)
+        # Check cache - if empty, rasterize
+        if cached_raster is None:
+            if state.swap_axes:
+                output = np.zeros((self.width, self.height), dtype=np.float32)
+            else:
+                output = np.zeros((self.height, self.width), dtype=np.float32)
+
+            raster_exp.rasterizeRTMZ(
+                output,
+                state.rt_min,
+                state.rt_max,
+                state.mz_min,
+                state.mz_max,
+                ms_level=1,
+                aggregation="sum",
+            )
+            if state.swap_axes:
+                output = output.T
+            cached_raster = output
+
+            # Store in appropriate cache
+            if state.has_faims and state.selected_faims_cv is not None:
+                state.faims_minimap_rasters[state.selected_faims_cv] = cached_raster
+            else:
+                state.cached_minimap_raster = cached_raster
+
+        # Create xarray DataArray from cached raster
+        # Use actual raster shape for coordinates (per-CV rasters may differ in size)
+        n_rows, n_cols = cached_raster.shape
+
+        if state.swap_axes:
+            # Swapped view: rows=RT, cols=m/z
+            xr_data = xr.DataArray(
+                cached_raster,
+                coords={
+                    "rt": np.linspace(state.rt_min, state.rt_max, n_rows),
+                    "mz": np.linspace(state.mz_min, state.mz_max, n_cols),
+                },
+                dims=["rt", "mz"],
+            )
+        else:
+            # Default view: rows=m/z, cols=RT
+            xr_data = xr.DataArray(
+                cached_raster,
+                coords={
+                    "mz": np.linspace(state.mz_min, state.mz_max, n_rows),
+                    "rt": np.linspace(state.rt_min, state.rt_max, n_cols),
+                },
+                dims=["mz", "rt"],
+            )
+
+        # Apply colormap with histogram equalization for better contrast
+        img = tf.shade(xr_data, cmap=COLORMAPS[state.colormap], how="eq_hist")
+        img = tf.dynspread(img, threshold=0.5, max_px=4)
         img = tf.set_background(img, get_colormap_background(state.colormap))
 
         # Convert to PIL
         plot_img = img.to_pil()
 
-        # Draw view rectangle
+        # Draw overlays (view rectangle and spectrum marker)
         self._draw_view_rectangle(plot_img, state)
-
-        # Draw spectrum marker
         self._draw_spectrum_marker(plot_img, state)
 
         # Convert to base64
@@ -191,6 +238,9 @@ class MinimapRenderer:
     def render_for_cv(self, state, cv: float, width: int = None, height: int = None) -> Optional[str]:
         """Render a minimap for a specific FAIMS CV value.
 
+        Tries rasterization from per-CV MSExperiment first (with caching),
+        falls back to DataFrame-based datashader rendering.
+
         Args:
             state: ViewerState with FAIMS data
             cv: The compensation voltage value to render
@@ -203,48 +253,83 @@ class MinimapRenderer:
         if not state.has_faims:
             return None
 
-        # Get CV data - use data_manager in out-of-core mode, faims_data in-memory
-        if state.data_manager is not None:
-            cv_df = state.data_manager.query_peaks_for_cv(cv, downsample=state.peakmap_downsampling)
-        else:
-            cv_df = state.faims_data.get(cv)
-
-        if cv_df is None or len(cv_df) == 0:
-            return None
-
-        # Use smaller dimensions for CV minimaps
         render_width = width or self.width
         render_height = height or max(40, self.height // 2)
 
-        # Create minimap canvas - swap axes to match main view
-        if state.swap_axes:
-            # m/z on x-axis, RT on y-axis
-            cvs = ds.Canvas(
-                plot_width=render_width,
-                plot_height=render_height,
-                x_range=(state.mz_min, state.mz_max),
-                y_range=(state.rt_min, state.rt_max),
-            )
-            agg = cvs.points(cv_df, "mz", "rt", agg=ds.max("log_intensity"))
-        else:
-            # RT on x-axis, m/z on y-axis (traditional)
-            cvs = ds.Canvas(
-                plot_width=render_width,
-                plot_height=render_height,
-                x_range=(state.rt_min, state.rt_max),
-                y_range=(state.mz_min, state.mz_max),
-            )
-            agg = cvs.points(cv_df, "rt", "mz", agg=ds.max("log_intensity"))
+        cv_exp = state.faims_experiments.get(cv)
+        if cv_exp is None:
+            return None
 
-        # Apply color map with linear scaling
-        img = tf.shade(agg, cmap=COLORMAPS[state.colormap], how="linear")
-        img = tf.dynspread(img, threshold=0.5, max_px=2)
+        return self._render_cv_with_rasterization(state, cv, cv_exp, render_width, render_height)
+
+    def _render_cv_with_rasterization(
+        self, state, cv: float, cv_exp, render_width: int, render_height: int
+    ) -> Optional[str]:
+        """Render per-CV minimap using rasterization with caching.
+
+        Args:
+            state: ViewerState
+            cv: Compensation voltage value
+            cv_exp: Per-CV MSExperiment object
+            render_width: Render width in pixels
+            render_height: Render height in pixels
+
+        Returns:
+            Base64-encoded PNG string, or None if rasterization fails
+        """
+        cached_raster = state.faims_minimap_rasters.get(cv)
+
+        if cached_raster is None:
+            if state.swap_axes:
+                output = np.zeros((render_width, render_height), dtype=np.float32)
+            else:
+                output = np.zeros((render_height, render_width), dtype=np.float32)
+
+            try:
+                cv_exp.rasterizeRTMZ(
+                    output,
+                    state.rt_min,
+                    state.rt_max,
+                    state.mz_min,
+                    state.mz_max,
+                    ms_level=1,
+                    aggregation="sum",
+                )
+                if state.swap_axes:
+                    output = output.T
+                cached_raster = output
+                state.faims_minimap_rasters[cv] = cached_raster
+            except Exception:
+                return None
+
+        if cached_raster.max() == 0.0:
+            return None
+
+        if state.swap_axes:
+            xr_data = xr.DataArray(
+                cached_raster,
+                coords={
+                    "rt": np.linspace(state.rt_min, state.rt_max, render_height),
+                    "mz": np.linspace(state.mz_min, state.mz_max, render_width),
+                },
+                dims=["rt", "mz"],
+            )
+        else:
+            xr_data = xr.DataArray(
+                cached_raster,
+                coords={
+                    "mz": np.linspace(state.mz_min, state.mz_max, render_height),
+                    "rt": np.linspace(state.rt_min, state.rt_max, render_width),
+                },
+                dims=["mz", "rt"],
+            )
+
+        img = tf.shade(xr_data, cmap=COLORMAPS[state.colormap], how="eq_hist")
+        img = tf.dynspread(img, threshold=0.5, max_px=4)
         img = tf.set_background(img, get_colormap_background(state.colormap))
 
-        # Convert to PIL
         plot_img = img.to_pil()
 
-        # Convert to base64
         buffer = io.BytesIO()
         plot_img.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")

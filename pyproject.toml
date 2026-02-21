@@ -24,19 +24,21 @@ classifiers = [
 ]
 
 dependencies = [
-    "nicegui>=3.3.1",
+    "nicegui>=3.7.1",
     "datashader>=0.18.2",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "colorcet>=3.0.0",
     "pillow>=10.0.0",
-    "pyopenms>=3.5.0",
+    "pyopenms==3.6.0.dev20260205",
     "pyopenms-viz>=0.1.0",
     "click>=8.0.0",
     "plotly>=5.0.0",
     "duckdb>=1.0.0",
     "pyarrow>=15.0.0",
     "pyimzML>=1.3.1",
+    "dask[dataframe]>=2024.0.0",
+    "xarray>=2023.0.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +47,12 @@ native = [
     "qtpy>=2.0.0",
     "PyQt6>=6.0.0",
     "PyQt6-WebEngine>=6.0.0",
+]
+gpu = [
+    # NVIDIA RAPIDS cuDF for GPU-accelerated datashader rendering
+    # Only available on Linux x86_64 with CUDA support
+    # Requires: pip install --extra-index-url https://pypi.nvidia.com
+    "cudf-cu12>=24.0.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -76,3 +84,16 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]
+
+[tool.uv]
+# Use system TLS certificates for HTTPS (fixes UnknownIssuer for private index)
+native-tls = true
+
+[tool.uv.sources]
+# Pin `pyopenms` to the private Tuebingen index so it's always resolved from there
+pyopenms = { index = "tuebingen" }
+
+[[tool.uv.index]]
+name = "tuebingen"
+url = "https://pypi.cs.uni-tuebingen.de/simple/"
+authenticate = "never"

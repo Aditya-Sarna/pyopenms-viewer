@@ -8,6 +8,7 @@ from typing import Optional
 
 from nicegui import ui
 
+from pyopenms_viewer.core.config import COLORMAPS
 from pyopenms_viewer.core.state import ViewerState
 from pyopenms_viewer.panels.base_panel import BasePanel
 from pyopenms_viewer.rendering import IMPeakMapRenderer
@@ -30,7 +31,7 @@ class IMPeakMapPanel(BasePanel):
         Args:
             state: ViewerState instance (shared reference)
         """
-        super().__init__(state, "im_peakmap", "Ion Mobility Map", "blur_on")
+        super().__init__(state, "im_peakmap", "Ion Mobility Frame", "blur_on")
 
         # UI elements
         self.im_image_element: Optional[ui.interactive_image] = None
@@ -103,6 +104,12 @@ class IMPeakMapPanel(BasePanel):
                 .tooltip("Show summed intensity profile vs ion mobility")
             )
 
+            # Colormap selector
+            colormap_options = list(COLORMAPS.keys())
+            ui.select(colormap_options, value=self.state.im_colormap, on_change=self._change_colormap).props(
+                "dense outlined"
+            ).classes("w-28")
+
             ui.button("Reset View", icon="home", on_click=self._reset_view).props("dense outline size=sm").tooltip(
                 "Reset to full IM range"
             )
@@ -159,8 +166,21 @@ class IMPeakMapPanel(BasePanel):
 
         # Update info label
         if self.info_label is not None and self.state.has_ion_mobility:
-            n_peaks = len(self.state.im_df) if self.state.im_df is not None else 0
-            self.info_label.set_text(f"Ion mobility data: {n_peaks:,} peaks | {self.state.im_type or 'Unknown type'}")
+            if self.state.selected_im_frame_idx is not None and self.state.exp is not None:
+                idx = self.state.selected_im_frame_idx
+                if 0 <= idx < len(self.state.exp):
+                    spec = self.state.exp[idx]
+                    ms_level = spec.getMSLevel()
+                    rt = spec.getRT()
+                    n_peaks = spec.size()
+                    self.info_label.set_text(
+                        f"Spectrum #{idx} | MS{ms_level} | RT={rt:.2f}s | {n_peaks:,} peaks"
+                        f" | {self.state.im_type or 'Unknown type'}"
+                    )
+                else:
+                    self.info_label.set_text(f"Ion mobility data | {self.state.im_type or 'Unknown type'}")
+            else:
+                self.info_label.set_text(f"Ion mobility data | {self.state.im_type or 'Unknown type'}")
 
     def _has_data(self) -> bool:
         """Check if panel has data to display."""
@@ -237,6 +257,12 @@ class IMPeakMapPanel(BasePanel):
             )
 
         self.update()
+
+    def _change_colormap(self, e):
+        """Change IM colormap."""
+        self.state.im_colormap = e.value
+        if self._has_data():
+            self.update()
 
     def _reset_view(self):
         """Reset to full IM view."""
