@@ -51,7 +51,7 @@ a = Analysis(
     hookspath=['.', 'pre_safe_import_module'],
     hooksconfig={},
     runtime_hooks=['pyi_rth_pyopenms.py'],
-    excludes=[],
+    excludes=['PyQt6', 'PyQt6.QtCore', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineCore', 'qtpy'],
     noarchive=False,
     optimize=0,
 )
