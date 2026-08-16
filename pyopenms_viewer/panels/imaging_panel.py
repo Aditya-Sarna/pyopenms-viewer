@@ -10,8 +10,8 @@ Implements the interactive browsing loop from the reference notebook
   log-spaced ppm grid (following ``compute_aggregate`` in the reference).
   **Click a peak → instant ion image** at that m/z ± ppm (fast browse loop).
 - **Pixel click** on the heatmap selects that pixel's spectrum in
-  SpectrumPanel; if the imzML carries per-peak ion mobility, IMPeakMapPanel
-  auto-activates via the loader.
+  SpectrumPanel; if the imzML carries per-peak ion mobility (OpenMS PR #9908),
+  IMPeakMapPanel auto-activates via the loader.
 - **Multi-ion overlay** — *Add to overlay* accumulates each extracted ion
   image into an IHC-style RGB composite, each ion in its own hue.
 
@@ -24,6 +24,8 @@ All heavy work uses OpenMS-native APIs:
 State: ``state.msi_experiment`` (MSImagingExperiment, set by ImzMLLoader);
 panel is only visible when ``state.has_imzml`` is True.
 """
+
+from collections import OrderedDict
 
 import numpy as np
 import plotly.graph_objects as go
@@ -40,13 +42,13 @@ _AGGREGATE_MODES = {"mean": "Mean", "skyline": "Skyline (max)"}
 # Distinct hues for the multi-ion overlay ("IHC stain" analogy in the
 # user story). Rotated in order of overlay additions.
 _OVERLAY_HUES: list[tuple[int, int, int]] = [
-    (255, 60, 60),    # red
-    (60, 255, 60),    # green
-    (80, 140, 255),   # blue
-    (255, 200, 50),   # amber
-    (255, 80, 220),   # magenta
-    (80, 240, 240),   # cyan
-    (255, 140, 60),   # orange
+    (255, 60, 60),  # red
+    (60, 255, 60),  # green
+    (80, 140, 255),  # blue
+    (255, 200, 50),  # amber
+    (255, 80, 220),  # magenta
+    (80, 240, 240),  # cyan
+    (255, 140, 60),  # orange
     (180, 100, 255),  # violet
 ]
 
@@ -54,6 +56,9 @@ _OVERLAY_HUES: list[tuple[int, int, int]] = [
 # figure is serialised to JSON on every update, and centroid imzML
 # files can have >100k non-zero bins. Same cap as the reference.
 _TOP_N_PEAKS = 400
+_ION_CACHE_MAX = 32
+_MAX_AGG_BINS = 50_000
+_MAX_AGG_PIXELS = 512
 
 # For large MSI grids, server-side color mapping + go.Image avoids expensive
 # Heatmap serialization and improves interaction latency.
@@ -92,8 +97,8 @@ class ImagingPanel(BasePanel):
 
         # Display state
         self._colorscale: str = "viridis"
-        self._mode: str = "tic"                     # "tic" | "ion"
-        self._agg_mode: str = "mean"                # "mean" | "skyline"
+        self._mode: str = "tic"  # "tic" | "ion"
+        self._agg_mode: str = "mean"  # "mean" | "skyline"
         self._current_mz: float | None = None
         self._current_ppm: float = 10.0
 
@@ -110,8 +115,8 @@ class ImagingPanel(BasePanel):
 
         # Lightweight caches to keep browse interactions snappy.
         self._tic_cache: np.ndarray | None = None
-        self._ion_cache_key: tuple[float, float] | None = None
-        self._ion_cache_img: np.ndarray | None = None
+        self._ion_cache: OrderedDict[tuple[float, float], np.ndarray] = OrderedDict()
+        self._ignore_mode_change = False
 
         self._plotly_config = {
             "modeBarButtonsToRemove": ["autoScale2d"],
@@ -145,7 +150,7 @@ class ImagingPanel(BasePanel):
         # update_figure fires while the panel is still mid-animation (the
         # initial auto-open on data load), which would otherwise leave the
         # aggregate spectrum stuck on its empty placeholder.
-        self.expansion.on('after-show', lambda _: self._after_show_render())
+        self.expansion.on("after-show", lambda _: self._after_show_render())
 
         self.state.on_data_loaded(self._on_data_loaded)
         return self.expansion
@@ -188,9 +193,10 @@ class ImagingPanel(BasePanel):
                 self._recompute_aggregate()
             except Exception as exc:
                 print(f"[ImagingPanel] aggregate error (after-show): {exc}")
-        self.update()   # refresh stored figure state
+        self.update()  # refresh stored figure state
         # Force re-render via JS for scatter-based plots (heatmaps are fine).
         import json as _json
+
         for plot in [self.spectrum_plot, self.overlay_plot]:
             if plot is None:
                 continue
@@ -221,28 +227,40 @@ class ImagingPanel(BasePanel):
         with ui.row().classes("items-center gap-3 w-full flex-wrap py-1"):
             ui.label("Display:").classes("text-sm text-gray-400")
 
-            self._mode_select = ui.select(
-                options={"tic": "TIC Image", "ion": "Ion Image (m/z)"},
-                value="tic",
-                label="",
-                on_change=lambda e: self._on_mode_change(e.value),
-            ).classes("w-40 text-sm").props("dense outlined")
+            self._mode_select = (
+                ui.select(
+                    options={"tic": "TIC Image", "ion": "Ion Image (m/z)"},
+                    value="tic",
+                    label="",
+                    on_change=lambda e: self._on_mode_change(e.value),
+                )
+                .classes("w-40 text-sm")
+                .props("dense outlined")
+            )
 
-            self._mz_input = ui.number(
-                label="m/z",
-                value=500.0,
-                step=0.001,
-                precision=4,
-                format="%.4f",
-            ).classes("w-32 text-sm").props("dense outlined")
+            self._mz_input = (
+                ui.number(
+                    label="m/z",
+                    value=500.0,
+                    step=0.001,
+                    precision=4,
+                    format="%.4f",
+                )
+                .classes("w-32 text-sm")
+                .props("dense outlined")
+            )
 
-            self._ppm_input = ui.number(
-                label="ppm tol",
-                value=10.0,
-                step=1.0,
-                min=0.1,
-                on_change=lambda e: self._on_ppm_change(e.value),
-            ).classes("w-24 text-sm").props("dense outlined")
+            self._ppm_input = (
+                ui.number(
+                    label="ppm tol",
+                    value=10.0,
+                    step=1.0,
+                    min=0.1,
+                    on_change=lambda e: self._on_ppm_change(e.value),
+                )
+                .classes("w-24 text-sm")
+                .props("dense outlined")
+            )
 
             ui.button(
                 "Extract",
@@ -253,20 +271,28 @@ class ImagingPanel(BasePanel):
             ui.separator().props("vertical")
 
             ui.label("Aggregate:").classes("text-sm text-gray-400")
-            self._agg_select = ui.select(
-                options=_AGGREGATE_MODES,
-                value="mean",
-                label="",
-                on_change=lambda e: self._on_agg_mode_change(e.value),
-            ).classes("w-36 text-sm").props("dense outlined")
+            self._agg_select = (
+                ui.select(
+                    options=_AGGREGATE_MODES,
+                    value="mean",
+                    label="",
+                    on_change=lambda e: self._on_agg_mode_change(e.value),
+                )
+                .classes("w-36 text-sm")
+                .props("dense outlined")
+            )
 
-            self._bin_ppm_input = ui.number(
-                label="bin (ppm)",
-                value=5.0,
-                step=0.5,
-                min=0.5,
-                on_change=lambda e: self._on_bin_ppm_change(e.value),
-            ).classes("w-24 text-sm").props("dense outlined")
+            self._bin_ppm_input = (
+                ui.number(
+                    label="bin (ppm)",
+                    value=5.0,
+                    step=0.5,
+                    min=0.5,
+                    on_change=lambda e: self._on_bin_ppm_change(e.value),
+                )
+                .classes("w-24 text-sm")
+                .props("dense outlined")
+            )
 
             ui.separator().props("vertical")
 
@@ -301,9 +327,9 @@ class ImagingPanel(BasePanel):
             "Click a pixel to jump to its spectrum. If the file carries ion "
             "mobility, the IM frame panel activates automatically."
         ).classes("text-xs text-gray-500 mb-1")
-        self.plot = ui.plotly(
-            self._figure_with_config(self._empty_figure())
-        ).classes("w-full")
+        self.plot = ui.plotly(self._figure_with_config(self._empty_figure())).classes(
+            "w-full"
+        )
         self.plot.on("plotly_click", self._on_image_click)
 
     def _build_spectrum_plot(self) -> None:
@@ -348,16 +374,16 @@ class ImagingPanel(BasePanel):
         self._current_mz = None
         self._overlay_entries.clear()
         self._tic_cache = None
-        self._ion_cache_key = None
-        self._ion_cache_img = None
+        self._ion_cache.clear()
         self._agg_centers = None
         self._agg_mean = None
         self._agg_skyline = None
         if self._mode_select is not None:
             self._mode_select.set_value("tic")
         # Rebuild the aggregate BEFORE opening the expansion. Opening first
-        # races Quasar ``after-show`` against an empty cache, which leaves the
-        # aggregate spectrum stuck on its placeholder after a page refresh.
+        # races Quasar ``after-show`` against an empty cache (or skips
+        # after-show entirely when the panel was already open), which leaves
+        # the aggregate spectrum stuck on its placeholder.
         try:
             self._recompute_aggregate()
         except Exception as exc:
@@ -377,15 +403,33 @@ class ImagingPanel(BasePanel):
         # Open last so ``after-show`` re-pushes figures with the cache already
         # populated (handles mid-animation / zero-size Plotly layout quirks).
         if self.expansion:
-            self.expansion.value = True
-
+            try:
+                self.expansion.value = True
+            except RuntimeError as exc:
+                if "parent slot" not in str(
+                    exc
+                ) and "Client has been deleted" not in str(exc):
+                    raise
 
     def _on_mode_change(self, mode: str) -> None:
+        if self._ignore_mode_change:
+            return
         self._mode = mode
         if mode == "tic":
             self._render_tic()
         elif self._current_mz is not None:
             self._render_ion_image(self._current_mz, self._current_ppm)
+
+    def _set_display_mode(self, mode: str) -> None:
+        """Update display mode without re-entrant ``on_change`` renders."""
+        self._mode = mode
+        if self._mode_select is None or self._mode_select.value == mode:
+            return
+        self._ignore_mode_change = True
+        try:
+            self._mode_select.set_value(mode)
+        finally:
+            self._ignore_mode_change = False
 
     def _on_agg_mode_change(self, agg_mode: str) -> None:
         self._agg_mode = agg_mode
@@ -426,9 +470,7 @@ class ImagingPanel(BasePanel):
             return
         self._current_mz = mz
         self._current_ppm = ppm
-        self._mode = "ion"
-        if self._mode_select is not None:
-            self._mode_select.set_value("ion")
+        self._set_display_mode("ion")
         self._render_ion_image(mz, ppm)
 
     def _on_spectrum_click(self, e) -> None:
@@ -445,9 +487,7 @@ class ImagingPanel(BasePanel):
         if mz <= 0:
             return
         self._current_mz = mz
-        self._mode = "ion"
-        if self._mode_select is not None:
-            self._mode_select.set_value("ion")
+        self._set_display_mode("ion")
         if self._mz_input is not None:
             self._mz_input.set_value(mz)
         self._render_ion_image(mz, self._current_ppm)
@@ -484,12 +524,14 @@ class ImagingPanel(BasePanel):
         if img is None or img.size == 0:
             return
         hue = _OVERLAY_HUES[len(self._overlay_entries) % len(_OVERLAY_HUES)]
-        self._overlay_entries.append({
-            "mz": float(self._current_mz),
-            "ppm": float(self._current_ppm),
-            "hue": hue,
-            "img": img,
-        })
+        self._overlay_entries.append(
+            {
+                "mz": float(self._current_mz),
+                "ppm": float(self._current_ppm),
+                "hue": hue,
+                "img": img,
+            }
+        )
         self._render_overlay()
 
     def _on_clear_overlay(self) -> None:
@@ -524,11 +566,14 @@ class ImagingPanel(BasePanel):
     def _compute_ion_image(self, mz: float, ppm: float) -> np.ndarray:
         """Ion image via native ``MSImagingExperiment.extractIonImage()``."""
         key = (float(mz), float(ppm))
-        if self._ion_cache_key == key and self._ion_cache_img is not None:
-            return self._ion_cache_img
+        cached = self._ion_cache.get(key)
+        if cached is not None:
+            self._ion_cache.move_to_end(key)
+            return cached
         img = self.state.msi_experiment.extractIonImage(mz, ppm).get_data()
-        self._ion_cache_key = key
-        self._ion_cache_img = img
+        self._ion_cache[key] = img
+        while len(self._ion_cache) > _ION_CACHE_MAX:
+            self._ion_cache.popitem(last=False)
         return img
 
     def _pixel_to_spectrum_idx(self, x: int, y: int) -> int | None:
@@ -552,11 +597,14 @@ class ImagingPanel(BasePanel):
     # ------------------------------------------------------------------
 
     def _recompute_aggregate(self) -> None:
-        """Single pass over every pixel → mean & skyline on a ppm-spaced grid.
+        """Single pass over pixels → mean & skyline on a ppm-spaced grid.
 
-        Mirrors the reference notebook's ``compute_aggregate`` cell verbatim:
+        Mirrors the reference notebook's ``compute_aggregate`` cell:
         log-spaced m/z edges spaced by ``bin_ppm`` ppm, ``np.searchsorted`` +
         ``np.add.at`` / ``np.maximum.at`` for the sum / max accumulators.
+
+        For large MSI datasets the pass is capped (bin count + pixel sample)
+        so the aggregate stays interactive while still representing the image.
         """
         mie = self.state.msi_experiment
         if mie is None:
@@ -575,18 +623,30 @@ class ImagingPanel(BasePanel):
 
         bin_ppm = float(self._agg_bin_ppm)
         step = float(np.log1p(bin_ppm * 1e-6))
-        n_edges = int(np.ceil((np.log(max_mz) - np.log(min_mz)) / step)) + 1
+        log_span = float(np.log(max_mz) - np.log(min_mz))
+        n_edges = int(np.ceil(log_span / step)) + 1
+        # Cap bins so searchsorted stays responsive on wide m/z ranges.
+        if n_edges - 1 > _MAX_AGG_BINS:
+            step = log_span / _MAX_AGG_BINS
+            n_edges = _MAX_AGG_BINS + 1
         edges = min_mz * np.exp(np.arange(n_edges) * step)
         centers = 0.5 * (edges[:-1] + edges[1:])
         n_bins = centers.size
 
         sum_ = np.zeros(n_bins, dtype=np.float64)
         max_ = np.zeros(n_bins, dtype=np.float64)
-        count = np.zeros(n_bins, dtype=np.int64)
+        # Peaks (or pixel hits) per bin — mean = sum / count, not sum / n_pixels.
+        # Dividing by all sampled pixels dilutes rare ions into near-zero bins.
+        count_ = np.zeros(n_bins, dtype=np.float64)
 
         geom = mie.getGeometry()
         spectra = msexp.getSpectra()
-        for px in geom.get_pixels_struct():
+        pixels = geom.get_pixels_struct()
+        n_pixels = len(pixels)
+        # Deterministic spatial subsample for large images (~14k peaks/pixel).
+        stride = max(1, (n_pixels + _MAX_AGG_PIXELS - 1) // _MAX_AGG_PIXELS)
+        n_seen = 0
+        for px in pixels[::stride]:
             mzs, ints = spectra[int(px["spectrum_index"])].get_peaks()
             if mzs.size == 0:
                 continue
@@ -594,9 +654,12 @@ class ImagingPanel(BasePanel):
             np.clip(idx, 0, n_bins - 1, out=idx)
             np.add.at(sum_, idx, ints)
             np.maximum.at(max_, idx, ints)
-            count[np.unique(idx)] += 1
+            np.add.at(count_, idx, 1.0)
+            n_seen += 1
 
-        mean = np.divide(sum_, count, out=np.zeros_like(sum_), where=count > 0)
+        mean = np.zeros_like(sum_)
+        if n_seen > 0:
+            np.divide(sum_, count_, out=mean, where=count_ > 0)
 
         self._agg_centers = centers
         self._agg_mean = mean
@@ -629,7 +692,13 @@ class ImagingPanel(BasePanel):
         container has its final dimensions, so figures that land here while
         the panel is mid-animation will be re-applied correctly on open.
         """
-        plot_el.update_figure(self._figure_with_config(fig))
+        try:
+            plot_el.update_figure(self._figure_with_config(fig))
+        except RuntimeError as exc:
+            # Page refresh / disconnected client — rehydrate will re-render.
+            if "parent slot" in str(exc) or "Client has been deleted" in str(exc):
+                return
+            raise
 
     def _render_tic(self) -> None:
         if not self._has_data() or self.plot is None:
@@ -658,6 +727,11 @@ class ImagingPanel(BasePanel):
     def _render_aggregate_spectrum(self) -> None:
         if self.spectrum_plot is None:
             return
+        if self._agg_centers is None and self._has_data():
+            try:
+                self._recompute_aggregate()
+            except Exception as exc:
+                print(f"[ImagingPanel] aggregate error: {exc}")
         mz, intensity = self._get_aggregate_top_peaks()
         if mz.size == 0:
             self.spectrum_plot.update_figure(
@@ -680,22 +754,26 @@ class ImagingPanel(BasePanel):
             stick_y += [0.0, y, None]
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=stick_x,
-            y=stick_y,
-            mode="lines",
-            line={"color": "steelblue", "width": 1},
-            hoverinfo="skip",
-            showlegend=False,
-        ))
-        fig.add_trace(go.Scatter(
-            x=mz_list,
-            y=int_list,
-            mode="markers",
-            marker={"size": 6, "color": "steelblue"},
-            hovertemplate="m/z: %{x:.4f}<br>intensity: %{y:.3e}<extra></extra>",
-            name=self._agg_mode,
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=stick_x,
+                y=stick_y,
+                mode="lines",
+                line={"color": "steelblue", "width": 1},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=mz_list,
+                y=int_list,
+                mode="markers",
+                marker={"size": 6, "color": "steelblue"},
+                hovertemplate="m/z: %{x:.4f}<br>intensity: %{y:.3e}<extra></extra>",
+                name=self._agg_mode,
+            )
+        )
         # Mark the currently-selected m/z with a red vertical line.
         if self._current_mz is not None:
             fig.add_vline(
@@ -708,18 +786,26 @@ class ImagingPanel(BasePanel):
             "\u2014 click a peak to browse the ion image"
         )
         fig.update_layout(
-            title={"text": title, "font": {"color": NEUTRAL_GRAY_HEX, "size": 12},
-                   "x": 0.01, "xanchor": "left"},
+            title={
+                "text": title,
+                "font": {"color": NEUTRAL_GRAY_HEX, "size": 12},
+                "x": 0.01,
+                "xanchor": "left",
+            },
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             height=280,
             showlegend=False,
-            xaxis={"title": "m/z", "color": NEUTRAL_GRAY_HEX, "gridcolor": "rgba(128,128,128,0.15)"},
+            xaxis={
+                "title": "m/z",
+                "color": NEUTRAL_GRAY_HEX,
+                "gridcolor": "rgba(128,128,128,0.15)",
+            },
             yaxis={
                 "title": "intensity",
                 "color": NEUTRAL_GRAY_HEX,
                 "gridcolor": "rgba(128,128,128,0.15)",
-                "autorange": True,       # y rescales automatically when x is zoomed
+                "autorange": True,  # y rescales automatically when x is zoomed
             },
             margin={"l": 60, "r": 20, "t": 40, "b": 45},
             dragmode="zoom",
@@ -758,9 +844,12 @@ class ImagingPanel(BasePanel):
 
         fig = go.Figure(go.Image(z=composite))
         fig.update_layout(
-            title={"text": f"Overlay ({len(self._overlay_entries)} ions)",
-                   "font": {"color": NEUTRAL_GRAY_HEX, "size": 13},
-                   "x": 0.01, "xanchor": "left"},
+            title={
+                "text": f"Overlay ({len(self._overlay_entries)} ions)",
+                "font": {"color": NEUTRAL_GRAY_HEX, "size": 13},
+                "x": 0.01,
+                "xanchor": "left",
+            },
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             height=380,
@@ -834,50 +923,83 @@ class ImagingPanel(BasePanel):
 
             fig = go.Figure(go.Image(z=rgb))
             fig.update_layout(
-                title={"text": title, "font": {"color": NEUTRAL_GRAY_HEX, "size": 13},
-                       "x": 0.01, "xanchor": "left"},
+                title={
+                    "text": title,
+                    "font": {"color": NEUTRAL_GRAY_HEX, "size": 13},
+                    "x": 0.01,
+                    "xanchor": "left",
+                },
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 height=440,
-                xaxis={"title": "pixel x", "color": NEUTRAL_GRAY_HEX,
-                           "showgrid": False, "zeroline": False, "range": [-0.5, w - 0.5]},
+                xaxis={
+                    "title": "pixel x",
+                    "color": NEUTRAL_GRAY_HEX,
+                    "showgrid": False,
+                    "zeroline": False,
+                    "range": [-0.5, w - 0.5],
+                },
                 # Non-reversed y-axis => array row 0 (geometry y=0) at the
                 # bottom (origin="lower"), matching the Heatmap path and the
                 # reference notebook's imshow(..., origin="lower").
-                yaxis={"title": "pixel y", "color": NEUTRAL_GRAY_HEX,
-                           "showgrid": False, "zeroline": False,
-                           "range": [-0.5, h - 0.5], "scaleanchor": "x"},
+                yaxis={
+                    "title": "pixel y",
+                    "color": NEUTRAL_GRAY_HEX,
+                    "showgrid": False,
+                    "zeroline": False,
+                    "range": [-0.5, h - 0.5],
+                    "scaleanchor": "x",
+                },
                 margin={"l": 60, "r": 20, "t": 50, "b": 50},
             )
             return fig
 
-        fig = go.Figure(go.Heatmap(
-            z=display_img,
-            x=list(range(w)),
-            y=list(range(h)),
-            colorscale=colorscale,
-            hoverongaps=False,
-            hovertemplate=(
-                "x: %{x}<br>y: %{y}<br>intensity: %{z:.3e}<extra></extra>"
-            ),
-            colorbar={
-                "title": {"text": "Intensity", "font": {"color": NEUTRAL_GRAY_HEX, "size": 11}},
-                "tickfont": {"color": NEUTRAL_GRAY_HEX, "size": 11},
-                "thickness": 12,
-                "len": 0.85,
-            },
-        ))
+        fig = go.Figure(
+            go.Heatmap(
+                # Native Python lists — orjson rejects numpy scalars in nested
+                # arrays and can stall/abort the NiceGUI update.
+                z=np.ascontiguousarray(display_img, dtype=np.float64).tolist(),
+                x=list(range(w)),
+                y=list(range(h)),
+                colorscale=colorscale,
+                hoverongaps=False,
+                hovertemplate=(
+                    "x: %{x}<br>y: %{y}<br>intensity: %{z:.3e}<extra></extra>"
+                ),
+                colorbar={
+                    "title": {
+                        "text": "Intensity",
+                        "font": {"color": NEUTRAL_GRAY_HEX, "size": 11},
+                    },
+                    "tickfont": {"color": NEUTRAL_GRAY_HEX, "size": 11},
+                    "thickness": 12,
+                    "len": 0.85,
+                },
+            )
+        )
         fig.update_layout(
-            title={"text": title, "font": {"color": NEUTRAL_GRAY_HEX, "size": 13},
-                   "x": 0.01, "xanchor": "left"},
+            title={
+                "text": title,
+                "font": {"color": NEUTRAL_GRAY_HEX, "size": 13},
+                "x": 0.01,
+                "xanchor": "left",
+            },
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             height=440,
-            xaxis={"title": "pixel x", "color": NEUTRAL_GRAY_HEX,
-                       "showgrid": False, "zeroline": False},
-            yaxis={"title": "pixel y", "color": NEUTRAL_GRAY_HEX,
-                       "showgrid": False, "zeroline": False,
-                       "scaleanchor": "x"},
+            xaxis={
+                "title": "pixel x",
+                "color": NEUTRAL_GRAY_HEX,
+                "showgrid": False,
+                "zeroline": False,
+            },
+            yaxis={
+                "title": "pixel y",
+                "color": NEUTRAL_GRAY_HEX,
+                "showgrid": False,
+                "zeroline": False,
+                "scaleanchor": "x",
+            },
             margin={"l": 60, "r": 20, "t": 50, "b": 50},
         )
         return fig
@@ -885,8 +1007,10 @@ class ImagingPanel(BasePanel):
     def _empty_figure(self) -> go.Figure:
         fig = go.Figure()
         fig.update_layout(
-            title={"text": "Ion Image \u2014 load an imzML file to display",
-                   "font": {"color": NEUTRAL_GRAY_HEX}},
+            title={
+                "text": "Ion Image \u2014 load an imzML file to display",
+                "font": {"color": NEUTRAL_GRAY_HEX},
+            },
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             height=200,
@@ -899,7 +1023,8 @@ class ImagingPanel(BasePanel):
             title={
                 "text": "Aggregate spectrum \u2014 load an imzML file to display",
                 "font": {"color": NEUTRAL_GRAY_HEX, "size": 12},
-                "x": 0.01, "xanchor": "left",
+                "x": 0.01,
+                "xanchor": "left",
             },
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -916,7 +1041,8 @@ class ImagingPanel(BasePanel):
             title={
                 "text": "Overlay \u2014 extract an ion image, then click *Add to overlay*",
                 "font": {"color": NEUTRAL_GRAY_HEX, "size": 12},
-                "x": 0.01, "xanchor": "left",
+                "x": 0.01,
+                "xanchor": "left",
             },
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",

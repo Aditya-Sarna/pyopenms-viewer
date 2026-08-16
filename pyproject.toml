@@ -30,7 +30,8 @@ dependencies = [
     "numpy>=1.24.0",
     "colorcet>=3.0.0",
     "pillow>=10.0.0",
-    "pyopenms==3.6.0.dev20260625",
+    # Nightly after OpenMS PR #9908 (imzML per-peak IM aux arrays).
+    "pyopenms==3.6.0.dev20260815",
     "pyopenms-viz>=0.1.0",
     "click>=8.0.0",
     "plotly>=5.0.0",
@@ -85,6 +86,10 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+# Keep collection in tests/ — root-level scripts named test_* are not the suite.
+testpaths = ["tests"]
 
 [tool.uv]
 # Use system TLS certificates for HTTPS (fixes UnknownIssuer for private index)
